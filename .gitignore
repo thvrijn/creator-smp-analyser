@@ -1,0 +1,30 @@
+/vendor/
+/node_modules/
+/public/build/
+.env
+.env.*
+!.env.example
+/storage/*.key
+/storage/logs/*
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+
+# Uploaded stream videos and other app files (local data, never in Git)
+/storage/app/private/*
+/storage/app/public/*
+/storage/framework/testing/*
+*.mp4
+*.mkv
+*.webm
+*.mov
+
+# Model caches (downloaded by `make models`)
+/worker/.cache/
+/worker/model-cache/
+
+# Generated files
+__pycache__/
+*.pyc
+/public/hot
+.phpunit.result.cache

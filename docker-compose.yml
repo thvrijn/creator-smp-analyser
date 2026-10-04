@@ -1,0 +1,103 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    working_dir: /var/www/html
+    env_file: .env
+    ports:
+      - "8000:8000"
+      - "5173:5173"
+    volumes:
+      - .:/var/www/html
+      - composer_vendor:/var/www/html/vendor
+      - node_modules:/var/www/html/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >-
+      sh -c "printf 'upload_max_filesize=%sM\\npost_max_size=%sM\\n' \"$${STREAM_MAX_UPLOAD_MB:-2048}\" \"$${STREAM_MAX_POST_MB:-2064}\" > /usr/local/etc/php/conf.d/99-stream-uploads.ini &&
+      php artisan migrate --force &&
+      (php artisan serve --host=0.0.0.0 --port=8000 &)
+      && npm run dev -- --host 0.0.0.0"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: creatorsmp4
+      POSTGRES_USER: creatorsmp4
+      POSTGRES_PASSWORD: creatorsmp4
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U creatorsmp4 -d creatorsmp4"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      WORKER_NAME: creatorsmp4-worker
+      WORKER_STORAGE_ROOT: /var/www/html/storage/app/private
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-nl}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      WHISPER_CHUNK_SECONDS: ${WHISPER_CHUNK_SECONDS:-300}
+      WHISPER_MODEL_CACHE: /worker/.cache
+      FFMPEG_TIMEOUT_SECONDS: ${FFMPEG_TIMEOUT_SECONDS:-7200}
+      EVENT_MODEL: ${EVENT_MODEL:-unsloth/Qwen3-8B-bnb-4bit}
+      WORKER_MODEL_IDLE_SECONDS: ${WORKER_MODEL_IDLE_SECONDS:-600}
+      EVENT_DEVICE: ${EVENT_DEVICE:-cuda}
+      EVENT_QUANTIZATION: ${EVENT_QUANTIZATION:-4bit}
+      EVENT_MAX_TOKENS: ${EVENT_MAX_TOKENS:-768}
+      HF_HOME: /worker/model-cache
+    volumes:
+      - ./worker:/worker
+      - .:/var/www/html:ro
+      - event_model_cache:/worker/model-cache
+    gpus: ${GPU_COUNT:-all}
+
+  queue:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    working_dir: /var/www/html
+    env_file: .env
+    volumes:
+      - .:/var/www/html
+      - composer_vendor:/var/www/html/vendor
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    command: php artisan queue:work redis --sleep=3 --tries=3 --timeout=3600 --backoff=10
+
+volumes:
+  composer_vendor:
+  node_modules:
+  postgres_data:
+  redis_data:
+  event_model_cache:

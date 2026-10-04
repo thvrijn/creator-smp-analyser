@@ -1,0 +1,4 @@
+.cache
+model-cache
+__pycache__
+*.pyc

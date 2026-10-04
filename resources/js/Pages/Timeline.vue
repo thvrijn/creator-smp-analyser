@@ -1,0 +1,2 @@
+<script setup lang="ts">import { Head } from '@inertiajs/vue3'; import EmptyState from '../Components/EmptyState.vue'; import AppLayout from '../Layouts/AppLayout.vue';</script>
+<template><Head title="Timeline" /><AppLayout title="Timeline" eyebrow="Analysis"><div class="standalone-panel"><EmptyState icon="timeline" title="No timeline events yet" description="Events will be visualized here once analysis is available." /></div></AppLayout></template>

@@ -1,0 +1,2 @@
+<script setup lang="ts">import { Head } from '@inertiajs/vue3'; import EmptyState from '../Components/EmptyState.vue'; import AppLayout from '../Layouts/AppLayout.vue';</script>
+<template><Head title="Video Builder" /><AppLayout title="Video Builder" eyebrow="Media"><div class="standalone-panel"><EmptyState title="Video Builder is not ready yet" description="Create highlight videos from your analysis in a later step." /></div></AppLayout></template>
