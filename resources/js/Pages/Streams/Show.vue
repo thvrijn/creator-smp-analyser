@@ -72,7 +72,7 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                 <div class="panel-heading"><div><p class="section-kicker">Analysis</p><h3 id="events-heading">Events</h3></div><span class="panel-badge">{{ events.length }}</span></div>
                 <div v-if="events.length" class="event-list">
                     <button v-for="event in events" :key="event.id" type="button" class="event-item" :class="{ 'event-item-active': event.id === selected_event_id }" :aria-pressed="event.id === selected_event_id" @click="selectEvent(event)">
-                        <span class="event-item-top"><span class="event-type" :class="'event-type-' + event.type">{{ eventTypeLabel(event.type) }}</span><span class="event-time">{{ formatSeconds(event.start_time) }} – {{ formatSeconds(event.end_time) }}</span></span>
+                        <span class="event-item-top"><span v-if="event.type !== 'other'" class="event-type" :class="'event-type-' + event.type">{{ eventTypeLabel(event.type) }}</span><span class="event-time event-time-end">{{ formatSeconds(event.start_time) }} – {{ formatSeconds(event.end_time) }}</span></span>
                         <span class="event-title">{{ event.title }}</span>
                         <span class="event-description">{{ event.description }}</span>
                         <span class="event-meta">{{ Math.round(event.confidence * 100) }}% confidence · {{ event.segment_count }} segments</span>

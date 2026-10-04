@@ -12,6 +12,7 @@ return [
         'device' => env('EVENT_DEVICE', 'cuda'),
         'quantization' => env('EVENT_QUANTIZATION', '4bit'),
         'max_tokens' => (int) env('EVENT_MAX_TOKENS', 768),
+        'max_segments' => (int) env('EVENT_MAX_SEGMENTS', 12),
         'chunk_seconds' => (float) env('EVENT_CHUNK_SECONDS', 90),
         'overlap_seconds' => (float) env('EVENT_CHUNK_OVERLAP_SECONDS', 15),
     ],

@@ -48,6 +48,14 @@ class EventExtractorTest(unittest.TestCase):
             events = validate_events({"events": [*invalid, valid]}, self.segments)
         self.assertEqual([event["title"] for event in events], ["Fight"])
 
+    def test_event_spanning_too_many_segments_is_skipped_as_a_chunk_summary(self) -> None:
+        segments = [{"index": i, "start_time": float(i), "end_time": i + 0.5, "text": f"line {i}"} for i in range(20)]
+        summary = {"type": "statement", "title": "Whole chunk", "description": "Everything.", "confidence": 0.9, "segment_indexes": list(range(13))}
+        moment = {"type": "death", "title": "Dies", "description": "Dies.", "confidence": 0.9, "segment_indexes": list(range(12))}
+        with patch("builtins.print"):
+            events = validate_events({"events": [summary, moment]}, segments)
+        self.assertEqual([event["title"] for event in events], ["Dies"])
+
     def test_empty_events_and_wrong_shape(self) -> None:
         self.assertEqual(validate_events(parse_model_output('{"events": []}'), self.segments), [])
         with self.assertRaises(ValueError):

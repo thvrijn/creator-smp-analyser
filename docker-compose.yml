@@ -70,6 +70,7 @@ services:
       EVENT_DEVICE: ${EVENT_DEVICE:-cuda}
       EVENT_QUANTIZATION: ${EVENT_QUANTIZATION:-4bit}
       EVENT_MAX_TOKENS: ${EVENT_MAX_TOKENS:-768}
+      EVENT_MAX_SEGMENTS: ${EVENT_MAX_SEGMENTS:-12}
       HF_HOME: /worker/model-cache
     volumes:
       - ./worker:/worker

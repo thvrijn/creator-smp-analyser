@@ -18,12 +18,36 @@ EVENT_TYPES = {
     "other",
 }
 
-SYSTEM_PROMPT = """You extract meaningful events from a Minecraft livestream transcript.
-Ignore filler and ordinary small talk. One event may span multiple transcript lines.
-Do not invent people, facts, or events. Refer to transcript lines only by their segment index from the input.
-The time of an event is taken from the segments you reference, so list every segment that belongs to the event.
-Return only valid JSON with this exact shape: {\"events\":[{\"type\":\"...\",\"title\":\"...\",\"description\":\"...\",\"confidence\":0.0,\"segment_indexes\":[0]}]}.
-Allowed types: player_encounter, combat, death, discovery, item, building, destruction, conversation, statement, other.
+# Tuned with a prompt eval on synthetic Dutch SMP chunks and a real stream; see TODO.md for the results.
+SYSTEM_PROMPT = """You find notable moments in one chunk of a Minecraft SMP livestream transcript. Around 90 players share one server and each streams their own perspective; they regularly run into each other. The speech is usually Dutch, sometimes English, and comes from automatic speech recognition, so expect odd wording, misspelled names and transcription errors.
+
+An event is one specific moment a viewer would want to find back or clip, for example: meeting or talking with another player, a fight, a death, a funny or dramatic moment, a discovery, getting or losing an important item, finishing or showing a build, something being destroyed or griefed, a plan, announcement or strong opinion about the server or its players.
+
+Rules:
+- List every separate moment in the chunk as its own event. Never summarise the chunk as one event.
+- An event uses only the lines where it happens: usually 1 to 6 lines, never more than 10. Leave out lead-up and unrelated lines.
+- Always name the other players involved, exactly as spoken, in the title and description. Never invent players, items, places or outcomes.
+- Ignore filler, it is never an event: greetings, reading, thanking or answering chat and followers, donations, audio or camera checks, breaks ("even water drinken", "ben zo terug"), food, small talk, complaining while playing.
+- A chunk with only filler returns {"events": []}.
+- If a moment is plausibly notable but vague, include it with a lower confidence (0.4-0.6).
+- title: max 8 words, English, specific: who and what (e.g. "Meets Sam at the bastion", not "Exploring").
+- description: 1-2 English sentences.
+- type: only when it clearly fits, otherwise "other". Clear types:
+  player_encounter (meets or spots another named player), conversation (meaningful talk with another player), combat (a fight), death (someone dies), discovery (finds a place, structure or valuable resource), item (gets, crafts, trades or loses an important item), building (starts, finishes or shows a build), destruction (something destroyed, burned or griefed), statement (announcement, plan, opinion or story about the server or its players).
+- confidence: 0.9+ when explicit and clear, 0.6-0.8 when likely, 0.4-0.6 when vague.
+
+Example input:
+0: [10.000] Oké, even naar de nether.
+1: [14.000] Kijk, daar is een bastion!
+2: [18.000] Daar staat Sam, die vecht met piglins.
+3: [22.000] Sam, ik kom je helpen!
+4: [26.000] We hebben ze allemaal verslagen.
+5: [30.000] Even kijken in de chat.
+Example output:
+{"events":[{"type":"discovery","title":"Finds a bastion in the Nether","description":"The streamer spots a bastion while exploring the Nether.","confidence":0.85,"segment_indexes":[1]},{"type":"combat","title":"Helps Sam fight piglins at the bastion","description":"The streamer joins Sam, who is fighting piglins, and together they defeat them.","confidence":0.9,"segment_indexes":[2,3,4]}]}
+
+Return only JSON with exactly these keys, nothing else:
+{"events":[{"type":"...","title":"...","description":"...","confidence":0.0,"segment_indexes":[0]}]}
 """
 
 
@@ -50,6 +74,9 @@ def parse_model_output(output: str) -> dict[str, Any]:
     return parsed
 
 
+MAX_SEGMENTS_PER_EVENT = int(os.getenv("EVENT_MAX_SEGMENTS", "12"))
+
+
 def validate_event(event: Any, segments: list[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise ValueError("Event must be an object")
@@ -67,6 +94,8 @@ def validate_event(event: Any, segments: list[dict[str, Any]]) -> dict[str, Any]
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise ValueError("Event confidence must be between 0 and 1")
     indexes = sorted(set(indexes))
+    if len(indexes) > MAX_SEGMENTS_PER_EVENT:
+        raise ValueError(f"Event spans {len(indexes)} segments; more than {MAX_SEGMENTS_PER_EVENT} is a chunk summary, not an event")
     # Timestamps always come from the referenced transcript segments, never from the model.
     return {
         "type": event_type,

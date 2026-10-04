@@ -69,7 +69,7 @@ class ExtractStreamEventsJob implements ShouldQueue
                     if ($validated === null) {
                         continue;
                     }
-                    $events[$this->eventKey($validated)] ??= $validated;
+                    $this->addEvent($events, $validated);
                 }
             }
 
@@ -169,6 +169,7 @@ class ExtractStreamEventsJob implements ShouldQueue
             ! is_array($event) => 'not an object',
             ! in_array($event['type'] ?? null, $types, true), blank($event['title'] ?? null), blank($event['description'] ?? null) => 'invalid type, title or description',
             ! is_array($indexes) || $indexes === [] || collect($indexes)->contains(fn ($index) => ! is_int($index) || ! array_key_exists($index, $chunk)) => 'invalid segment index',
+            count(array_unique($indexes)) > (int) config('services.event_worker.max_segments', 12) => 'too many segments (chunk summary)',
             ! is_int($confidence) && ! is_float($confidence) || $confidence < 0 || $confidence > 1 => 'confidence outside 0-1',
             default => null,
         };
@@ -191,10 +192,26 @@ class ExtractStreamEventsJob implements ShouldQueue
         ];
     }
 
-    /** Overlapping chunks can report the same event; type + title + linked segments identify it. */
-    private function eventKey(array $event): string
+    /**
+     * Overlapping chunks can report the same moment with a different title or type. Events that share at least
+     * half of the smaller event's segments are the same moment; the one with the highest confidence is kept.
+     *
+     * @param  array<int, array<string, mixed>>  $events
+     * @param  array<string, mixed>  $candidate
+     */
+    private function addEvent(array &$events, array $candidate): void
     {
-        return implode('|', [$event['type'], mb_strtolower($event['title']), implode(',', $event['segment_ids'])]);
+        foreach ($events as $index => $existing) {
+            $shared = count(array_intersect($existing['segment_ids'], $candidate['segment_ids']));
+            if ($shared * 2 >= min(count($existing['segment_ids']), count($candidate['segment_ids']))) {
+                if ($candidate['confidence'] > $existing['confidence']) {
+                    $events[$index] = $candidate;
+                }
+
+                return;
+            }
+        }
+        $events[] = $candidate;
     }
 
     private function markAsProcessing(Stream $stream): bool

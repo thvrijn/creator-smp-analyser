@@ -9,7 +9,8 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 ## Event Extraction-basis (plan stap afronden)
 
-- [ ] Event-kwaliteit verbeteren. Op stream 41 geeft Qwen per chunk precies één brede "statement"-samenvatting die bijna alle segmenten van de chunk koppelt, in plaats van concrete gebeurtenissen. Door de overlap staat "The Purpose of Minecraft" er twee keer in, met andere segmenten. Opties: prompt aanscherpen (meerdere korte events, max N segmenten per event, "statement" alleen voor opvallende uitspraken), kleinere chunks, of dedupe op overlappende segmenten.
+- [ ] Event-extractie testen op een echte SMP-stream met ontmoetingen. Stream 41 is een tips-video, en de huidige prompt is getest op zelfgemaakte SMP-fragmenten.
+- [ ] Later, voor cross-stream matching: genoemde spelers als apart veld opslaan (nu alleen in titel en beschrijving)
 
 ## Features
 
@@ -50,6 +51,7 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 - [x] `make start` doet alles: bouwen, starten, testdatabase, modellen downloaden, health check (inclusief GPU)
 - [x] Python-tests uitgebreid (19 tests), `make worker-test` draait alle testbestanden
 - [x] Git-repository opgezet. Video's, modelcaches en gegenereerde bestanden staan in `.gitignore`.
+- [x] Event-kwaliteit verbeterd. Nieuwe prompt voor ~90 SMP-streamers: type optioneel, spelers bij naam, filler genegeerd. Max 12 segmenten per event, en dedupe op overlappende segmenten. Prompt-eval: 12/12 momenten gevonden (oude prompt 7/12), 0 events op filler. `make prompt-eval` om toekomstige promptwijzigingen te meten.
 - [x] Stream-pagina (`/streams/{id}`): klik op een stream-rij voor events en transcript naast elkaar. Klik op een event om naar de segmenten te springen. De Events-pagina linkt hier ook naartoe.
 - [x] Dashboard met player-cards (5 per rij) en player-pagina met hun streams. Oude dashboard heet nu Overview. Streamtabel en Add Stream zijn gedeelde componenten.
 - [x] HTTP/0.9-fout opgelost: worker-fouten zijn nu altijd een nette HTTP-response en worden gelogd

@@ -2,7 +2,7 @@
 
 COMPOSE := docker compose
 
-.PHONY: help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test
+.PHONY: help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test prompt-eval
 
 help:
 	@echo "CreatorSMP4 development commands:"
@@ -25,6 +25,7 @@ help:
 	@echo "  make test-filter FILTER=... Run selected Laravel tests"
 	@echo "  make build                  Build frontend assets"
 	@echo "  make worker-test            Run Python worker tests"
+	@echo "  make prompt-eval            Score the event prompt on synthetic SMP chunks (uses the GPU)"
 
 # Rebuilds only what changed (Docker layer cache), so requirement changes are never missed.
 start:
@@ -86,3 +87,7 @@ build:
 
 worker-test:
 	$(COMPOSE) exec -T worker python3 -m unittest discover -s /worker -p "test_*.py"
+
+prompt-eval:
+	$(COMPOSE) restart worker
+	$(COMPOSE) exec -T worker python3 -W ignore /worker/prompt_eval.py

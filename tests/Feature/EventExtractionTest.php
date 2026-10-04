@@ -257,6 +257,53 @@ class EventExtractionTest extends TestCase
         $this->assertSame([$shared->id], Event::firstOrFail()->transcriptSegments()->pluck('transcript_segments.id')->all());
     }
 
+    public function test_event_covering_too_many_segments_is_skipped(): void
+    {
+        config(['services.event_worker.max_segments' => 2]);
+        $stream = $this->createStream('completed');
+        foreach ([1, 4, 7] as $start) {
+            TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => number_format($start, 3, '.', ''), 'end_time' => number_format($start + 2, 3, '.', ''), 'text' => 'Line '.$start]);
+        }
+        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker->shouldReceive('extract')->once()->andReturn([
+            ['type' => 'statement', 'title' => 'Chunk summary', 'description' => 'Everything.', 'confidence' => 0.9, 'segment_indexes' => [0, 1, 2]],
+            ['type' => 'death', 'title' => 'Dies', 'description' => 'Dies.', 'confidence' => 0.9, 'segment_indexes' => [1, 2]],
+        ]);
+
+        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+
+        $this->assertSame(['Dies'], Event::pluck('title')->all());
+    }
+
+    public function test_same_moment_with_different_title_and_type_keeps_the_most_confident_event(): void
+    {
+        config(['services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 5]);
+        $stream = $this->createStream('completed');
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '0.000', 'end_time' => '4.000', 'text' => 'Opening']);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '6.000', 'end_time' => '7.000', 'text' => 'Sam shows up']);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '7.500', 'end_time' => '9.000', 'text' => 'Hoi Sam']);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '11.000', 'end_time' => '14.000', 'text' => 'Closing']);
+        $calls = 0;
+        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker->shouldReceive('extract')->andReturnUsing(function (array $segments) use (&$calls): array {
+            $calls++;
+            $texts = array_column($segments, 'text');
+            $first = array_search('Sam shows up', $texts, true);
+            $second = array_search('Hoi Sam', $texts, true);
+            if ($first === false || $second === false) {
+                return [];
+            }
+            return $calls === 1
+                ? [['type' => 'other', 'title' => 'Sam arrives', 'description' => 'Sam is there.', 'confidence' => 0.6, 'segment_indexes' => [$first, $second]]]
+                : [['type' => 'player_encounter', 'title' => 'Meets Sam', 'description' => 'Meets Sam.', 'confidence' => 0.9, 'segment_indexes' => [$second]]];
+        });
+
+        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+
+        $this->assertGreaterThanOrEqual(2, $calls);
+        $this->assertSame(['Meets Sam'], Event::pluck('title')->all());
+    }
+
     public function test_worker_crash_marks_extraction_as_failed_with_error(): void
     {
         config(['services.event_worker.url' => 'http://worker:8001']);
