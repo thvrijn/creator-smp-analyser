@@ -28,20 +28,37 @@ done
 [ "$app_ok" = "1" ] && ok "app http://localhost:8000" || fail "app not reachable on http://localhost:8000 (see: make logs-app)"
 
 $COMPOSE ps --status running --services 2>/dev/null | grep -qx queue && ok "queue worker running" || fail "queue container not running (see: make logs-queue)"
+ytdlp=$($COMPOSE exec -T queue yt-dlp --version 2>/dev/null | tr -d '\r')
+[ -n "$ytdlp" ] && ok "yt-dlp $ytdlp (VOD downloads)" || fail "yt-dlp missing in the queue container (run: make start, it rebuilds the image)"
 
-health=$($COMPOSE exec -T app curl -fsS http://worker:8001/health 2>/dev/null)
-[ -n "$health" ] && ok "python worker $health" || fail "python worker not reachable on http://worker:8001 (see: make logs-worker)"
+# Through the app container, so this tests the worker URL the app really uses (on macOS: the host).
+health=""
+for _ in $(seq 1 15); do
+    health=$($COMPOSE exec -T app sh -c 'curl -fsS "$TRANSCRIPTION_WORKER_URL/health"' 2>/dev/null) && break
+    sleep 1
+done
+[ -n "$health" ] && ok "python worker $health" || fail "python worker not reachable from the app (see: make logs-worker)"
 
-gpu=$($COMPOSE exec -T worker python3 -W ignore -c "
-import torch, ctranslate2
-assert torch.cuda.is_available(), 'torch: CUDA not available'
-x = torch.ones(1024, device='cuda'); assert (x * 2).sum().item() == 2048
-assert ctranslate2.get_cuda_device_count() > 0, 'ctranslate2: no CUDA device'
-free, total = torch.cuda.mem_get_info()
-print(f'{torch.cuda.get_device_name(0)} (torch {torch.__version__}, {free / 2**30:.1f}/{total / 2**30:.1f} GB VRAM free)')
+# WORKER_PY comes from the Makefile: the worker container, or the native worker on macOS.
+gpu=$(${WORKER_PY:-$COMPOSE exec -T worker python3} -W ignore -c "
+import importlib.util
+if importlib.util.find_spec('mlx'):
+    import mlx.core as mx
+    assert mx.metal.is_available(), 'mlx: Metal not available'
+    x = mx.ones(1024); assert (x * 2).sum().item() == 2048
+    info = mx.device_info()
+    name, memory = info['device_name'], info['memory_size']
+    print(f'{name} (MLX {mx.__version__}, {memory / 2**30:.1f} GB unified memory)')
+else:
+    import torch, ctranslate2
+    assert torch.cuda.is_available(), 'torch: CUDA not available'
+    x = torch.ones(1024, device='cuda'); assert (x * 2).sum().item() == 2048
+    assert ctranslate2.get_cuda_device_count() > 0, 'ctranslate2: no CUDA device'
+    free, total = torch.cuda.mem_get_info()
+    print(f'{torch.cuda.get_device_name(0)} (torch {torch.__version__}, {free / 2**30:.1f}/{total / 2**30:.1f} GB VRAM free)')
 " 2>&1 | tail -1)
 case "$gpu" in
-    *GB\ VRAM\ free*) ok "GPU $gpu" ;;
+    *GB\ VRAM\ free*|*GB\ unified\ memory*) ok "GPU $gpu" ;;
     *) fail "GPU/CUDA check failed: $gpu" ;;
 esac
 

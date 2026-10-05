@@ -30,8 +30,9 @@ Rules:
 - Ignore filler, it is never an event: greetings, reading, thanking or answering chat and followers, donations, audio or camera checks, breaks ("even water drinken", "ben zo terug"), food, small talk, complaining while playing.
 - A chunk with only filler returns {"events": []}.
 - If a moment is plausibly notable but vague, include it with a lower confidence (0.4-0.6).
-- title: max 8 words, English, specific: who and what (e.g. "Meets Sam at the bastion", not "Exploring").
-- description: 1-2 English sentences.
+- title and description are always in Dutch. Keep Minecraft and game terms in English (Nether, bastion, creeper, pickaxe, spawn).
+- title: max 8 words, specific: who and what (e.g. "Ontmoet Sam bij de bastion", not "Aan het verkennen").
+- description: 1-2 Dutch sentences.
 - type: only when it clearly fits, otherwise "other". Clear types:
   player_encounter (meets or spots another named player), conversation (meaningful talk with another player), combat (a fight), death (someone dies), discovery (finds a place, structure or valuable resource), item (gets, crafts, trades or loses an important item), building (starts, finishes or shows a build), destruction (something destroyed, burned or griefed), statement (announcement, plan, opinion or story about the server or its players).
 - confidence: 0.9+ when explicit and clear, 0.6-0.8 when likely, 0.4-0.6 when vague.
@@ -44,7 +45,7 @@ Example input:
 4: [26.000] We hebben ze allemaal verslagen.
 5: [30.000] Even kijken in de chat.
 Example output:
-{"events":[{"type":"discovery","title":"Finds a bastion in the Nether","description":"The streamer spots a bastion while exploring the Nether.","confidence":0.85,"segment_indexes":[1]},{"type":"combat","title":"Helps Sam fight piglins at the bastion","description":"The streamer joins Sam, who is fighting piglins, and together they defeat them.","confidence":0.9,"segment_indexes":[2,3,4]}]}
+{"events":[{"type":"discovery","title":"Vindt een bastion in de Nether","description":"De streamer ziet een bastion tijdens het verkennen van de Nether.","confidence":0.85,"segment_indexes":[1]},{"type":"combat","title":"Helpt Sam tegen piglins bij de bastion","description":"De streamer helpt Sam, die met piglins vecht, en samen verslaan ze ze.","confidence":0.9,"segment_indexes":[2,3,4]}]}
 
 Return only JSON with exactly these keys, nothing else:
 {"events":[{"type":"...","title":"...","description":"...","confidence":0.0,"segment_indexes":[0]}]}
@@ -68,9 +69,9 @@ def parse_model_output(output: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("Event model returned invalid JSON") from exc
+        raise ValueError("Het eventmodel gaf geen geldige JSON terug") from exc
     if not isinstance(parsed, dict) or not isinstance(parsed.get("events"), list):
-        raise ValueError("Event model JSON must contain an events array")
+        raise ValueError("De JSON van het eventmodel bevat geen events-lijst")
     return parsed
 
 
@@ -128,6 +129,12 @@ class EventExtractor:
         self.max_tokens = int(os.getenv("EVENT_MAX_TOKENS", "768"))
 
     def _load(self) -> tuple[Any, Any]:
+        if self.device == "mlx":
+            # Apple Silicon (macOS, see scripts/worker-mac.sh): a pre-quantized MLX checkpoint on Metal.
+            from mlx_lm import load
+
+            return load(self.model_name)
+
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -158,8 +165,6 @@ class EventExtractor:
         return validate_events(parse_model_output(decoded), segments)
 
     def _generate(self, model: Any, tokenizer: Any, segments: list[dict[str, Any]]) -> str:
-        import torch
-
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_prompt(segments)},
@@ -167,6 +172,14 @@ class EventExtractor:
         prompt = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
+        if self.device == "mlx":
+            from mlx_lm import generate
+
+            # Greedy by default, like do_sample=False below.
+            return generate(model, tokenizer, prompt=prompt, max_tokens=self.max_tokens)
+
+        import torch
+
         inputs = tokenizer(prompt, return_tensors="pt")
         device = next(model.parameters()).device
         inputs = {key: value.to(device) for key, value in inputs.items()}

@@ -9,6 +9,8 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
+        $this->call(CreatorSmpPlayerSeeder::class);
+
         foreach (['Sophie', 'Lars', 'Mark'] as $name) {
             Player::firstOrCreate(['name' => $name]);
         }

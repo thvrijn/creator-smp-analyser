@@ -15,7 +15,15 @@ class Player extends Model
 
     protected $fillable = [
         'name',
+        'photo_path',
+        'twitch_login',
+        'vods_synced_at',
     ];
+
+    protected function casts(): array
+    {
+        return ['vods_synced_at' => 'datetime'];
+    }
 
     public function streams(): HasMany
     {
@@ -28,6 +36,12 @@ class Player extends Model
     }
 
     /** Adds the per-player stream statistics shown on the dashboard cards and the player page. */
+    // Case-insensitive: the Alpine Postgres image sorts like the C locale, which puts "APPELKAAS" before "Acid".
+    public function scopeOrderByName(Builder $query): Builder
+    {
+        return $query->orderByRaw('lower(name)');
+    }
+
     public function scopeWithStreamStats(Builder $query): Builder
     {
         return $query
@@ -42,12 +56,21 @@ class Player extends Model
             ->withMax('streams', 'started_at');
     }
 
+    /** The photo URL changes with every update, so browsers may cache it forever. */
+    public function photoUrl(): ?string
+    {
+        return $this->photo_path === null ? null : route('players.photo', ['player' => $this->id, 'v' => $this->updated_at?->timestamp], false);
+    }
+
     /** @return array<string, mixed> */
     public function statsPayload(): array
     {
         return [
             'id' => $this->id,
             'name' => $this->name,
+            'photo_url' => $this->photoUrl(),
+            'twitch_login' => $this->twitch_login,
+            'vods_synced_at' => $this->vods_synced_at?->toIso8601String(),
             'streams_count' => (int) $this->streams_count,
             'transcribed_streams_count' => (int) $this->transcribed_streams_count,
             'active_streams_count' => (int) $this->active_streams_count,

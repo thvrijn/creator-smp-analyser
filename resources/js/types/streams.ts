@@ -1,6 +1,10 @@
 export type PlayerOption = { id: number; name: string };
+export type PlayerRef = PlayerOption & { photo_url: string | null };
 
-export type PlayerStats = PlayerOption & {
+export type EditablePlayer = PlayerRef & { twitch_login: string | null };
+
+export type PlayerStats = EditablePlayer & {
+    vods_synced_at: string | null;
     streams_count: number;
     transcribed_streams_count: number;
     active_streams_count: number;
@@ -24,16 +28,28 @@ export type TranscriptionStatus = {
     error: string | null;
     event_extraction_status: EventExtractionStatus;
     event_extraction_error: string | null;
+    transcription_stalled: boolean;
+    event_extraction_stalled: boolean;
 };
 
 export type Stream = {
     id: number;
     title: string;
-    player: PlayerOption;
+    player: PlayerRef;
     started_at: string;
     ended_at: string | null;
     source: string | null;
     video_path: string | null;
+    video_mime_type: string | null;
+    twitch_video_id: string | null;
+    video_download_status: 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
+    video_download_progress: number;
+    video_download_error: string | null;
+    transcription_stalled: boolean;
+    event_extraction_stalled: boolean;
+    video_download_stalled: boolean;
+    video_offset_seconds: number;
+    transcription_ranges: [number, number][] | null;
     transcription_status: TranscriptionState;
     transcription_stage: TranscriptionStage;
     transcription_progress: number;
@@ -50,5 +66,5 @@ export type Stream = {
 };
 
 export const formatDate = (value: string | null) => value
-    ? new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+    ? new Intl.DateTimeFormat('nl-NL', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
     : '—';

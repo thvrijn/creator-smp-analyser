@@ -23,6 +23,9 @@ class UpdatePlayerRequest extends FormRequest
                 'max:255',
                 Rule::unique('players', 'name')->ignore($player),
             ],
+            'photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
+            'remove_photo' => ['boolean'],
+            'twitch_login' => ['nullable', 'string', 'regex:/^[A-Za-z0-9_]{3,25}$/'],
         ];
     }
 }

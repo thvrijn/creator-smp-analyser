@@ -1,0 +1,4 @@
+faster-whisper>=1.1,<2.0
+# faster-whisper 1.2 passes av.open(metadata_errors=...), which PyAV 18 removed.
+av<18
+mlx-lm>=0.32,<1

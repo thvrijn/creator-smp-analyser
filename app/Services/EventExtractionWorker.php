@@ -16,19 +16,19 @@ class EventExtractionWorker
                     'segments' => $segments,
                 ]);
         } catch (\Throwable $exception) {
-            throw new RuntimeException('The event extraction worker could not be reached: '.$exception->getMessage(), 0, $exception);
+            throw new RuntimeException('De event-worker is niet bereikbaar: '.$exception->getMessage(), 0, $exception);
         }
 
         if ($response->status() === 422) {
-            throw new InvalidModelOutputException((string) $response->json('error', 'The event model returned unusable output.'));
+            throw new InvalidModelOutputException((string) $response->json('error', 'Het eventmodel gaf onbruikbare output.'));
         }
         if ($response->failed()) {
-            throw new RuntimeException((string) $response->json('error', 'The event extraction worker failed.'));
+            throw new RuntimeException((string) $response->json('error', 'De event-worker is mislukt.'));
         }
 
         $events = $response->json('events');
         if (! is_array($events)) {
-            throw new RuntimeException('The event extraction worker returned an invalid events payload.');
+            throw new RuntimeException('De event-worker gaf een ongeldig antwoord.');
         }
 
         return $events;

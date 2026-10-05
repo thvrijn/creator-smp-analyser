@@ -1,0 +1,16 @@
+# macOS override, selected by the Makefile. Docker has no GPU there, so the worker runs
+# natively (scripts/worker-mac.sh) and the app and queue reach it on the host.
+services:
+  worker:
+    profiles: [nvidia]
+  app:
+    environment: &worker-url
+      TRANSCRIPTION_WORKER_URL: http://host.docker.internal:8001
+      EVENT_WORKER_URL: http://host.docker.internal:8001
+  queue:
+    environment: *worker-url
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

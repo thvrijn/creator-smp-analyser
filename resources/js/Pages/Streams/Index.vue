@@ -14,11 +14,11 @@ const showForm = ref(false);
 
 <template>
     <Head title="Streams" />
-    <AppLayout title="Streams" eyebrow="Analysis">
-        <div class="streams-toolbar"><div><p class="section-kicker">Library</p><h2 class="page-section-title">Your streams</h2><p class="muted-copy">Manage source recordings ready for analysis.</p></div><button class="primary-button" type="button" @click="showForm = true"><span>＋</span> Add Stream</button></div>
+    <AppLayout title="Streams" eyebrow="Analyse">
+        <div class="streams-toolbar"><div><p class="section-kicker">Bibliotheek</p><h2 class="page-section-title">Je streams</h2><p class="muted-copy">Beheer de opnames die klaar zijn voor analyse.</p></div><button class="primary-button" type="button" @click="showForm = true"><span>＋</span> Stream toevoegen</button></div>
         <FlashMessages />
         <StreamsTable v-if="streams.length" :streams="streams" />
-        <div v-else class="standalone-panel"><EmptyState title="No streams yet" description="Add your first stream to start building your analysis library." /></div>
+        <div v-else class="standalone-panel"><EmptyState title="Nog geen streams" description="Voeg je eerste stream toe om je analysebibliotheek op te bouwen." /></div>
         <AddStreamModal v-model:open="showForm" :players="players" />
     </AppLayout>
 </template>

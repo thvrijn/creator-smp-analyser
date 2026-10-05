@@ -12,7 +12,8 @@ export default defineConfig({
     ],
     server: {
         host: '0.0.0.0',
-        port: 5173,
+        // Same port inside and outside Docker: the hot file sends the browser to localhost:<port>.
+        port: Number(process.env.VITE_PORT || 5173),
         strictPort: true,
         hmr: {
             host: 'localhost',

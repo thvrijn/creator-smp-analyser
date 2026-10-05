@@ -1,11 +1,14 @@
 FROM php:8.3-cli-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git unzip libpq-dev libzip-dev nodejs npm \
+    && apt-get install -y --no-install-recommends git unzip libpq-dev libzip-dev nodejs npm python3 ffmpeg \
     && docker-php-ext-install pdo_pgsql zip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+# yt-dlp downloads Twitch VODs (it runs on python3 and cuts sections with ffmpeg). Rebuild the image to update it.
+ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp /usr/local/bin/yt-dlp
 
 WORKDIR /var/www/html
 

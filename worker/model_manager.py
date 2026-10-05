@@ -9,10 +9,17 @@ def release_gpu_memory() -> None:
     gc.collect()
     try:
         import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     except ImportError:
-        return
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        pass
+    try:
+        import mlx.core as mx  # macOS only
+
+        mx.clear_cache()
+    except ImportError:
+        pass
 
 
 class ModelManager:

@@ -7,7 +7,7 @@ services:
     env_file: .env
     ports:
       - "8000:8000"
-      - "5173:5173"
+      - "${VITE_PORT:-5173}:${VITE_PORT:-5173}"
     volumes:
       - .:/var/www/html
       - composer_vendor:/var/www/html/vendor
@@ -41,8 +41,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No host port: app and queue reach it as redis:6379, and a host 6379 is often taken by another project.
     volumes:
       - redis_data:/data
     healthcheck:
@@ -76,9 +75,17 @@ services:
       - ./worker:/worker
       - .:/var/www/html:ro
       - event_model_cache:/worker/model-cache
-    gpus: ${GPU_COUNT:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu]
 
   queue:
+    # Reaps the yt-dlp and ffmpeg processes the downloads start.
+    init: true
     build:
       context: .
       dockerfile: docker/php/Dockerfile

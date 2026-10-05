@@ -26,17 +26,17 @@ class WorkerHttpErrorTest(unittest.TestCase):
         return result
 
     def test_invalid_model_output_returns_json_error(self) -> None:
-        with patch.object(entrypoint._event_extractor, "extract", side_effect=ValueError("Event model returned invalid JSON")):
+        with patch.object(entrypoint._event_extractor, "extract", side_effect=ValueError("Het eventmodel gaf geen geldige JSON terug")):
             status, content_type, body = self.post("/extract-events", json.dumps({"segments": [{"text": "x"}]}))
         self.assertEqual(status, 422)
         self.assertEqual(content_type, "application/json")
-        self.assertEqual(json.loads(body), {"error": "Event model returned invalid JSON"})
+        self.assertEqual(json.loads(body), {"error": "Het eventmodel gaf geen geldige JSON terug"})
 
     def test_unexpected_extraction_error_returns_500(self) -> None:
         with patch.object(entrypoint._event_extractor, "extract", side_effect=KeyError("boom")):
             status, _, body = self.post("/extract-events", json.dumps({"segments": []}))
         self.assertEqual(status, 500)
-        self.assertIn("Worker error", json.loads(body)["error"])
+        self.assertIn("Workerfout", json.loads(body)["error"])
 
     def test_malformed_requests_return_400(self) -> None:
         for path, body in [("/extract-events", "not json"), ("/extract-events", json.dumps({"segments": "x"})), ("/transcribe", json.dumps({"stream_id": 1}))]:
@@ -46,11 +46,11 @@ class WorkerHttpErrorTest(unittest.TestCase):
             self.assertIn("error", json.loads(response))
 
     def test_transcription_failure_after_stream_start_is_an_ndjson_error_event(self) -> None:
-        with patch.object(entrypoint, "transcribe_stream", side_effect=entrypoint.ProcessingError("stream file does not exist: a.mp4")):
+        with patch.object(entrypoint, "transcribe_stream", side_effect=entrypoint.ProcessingError("streambestand bestaat niet: a.mp4")):
             status, content_type, body = self.post("/transcribe", json.dumps({"stream_id": 1, "video_path": "a.mp4"}))
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "application/x-ndjson")
-        self.assertEqual(json.loads(body), {"type": "error", "error": "stream file does not exist: a.mp4"})
+        self.assertEqual(json.loads(body), {"type": "error", "error": "streambestand bestaat niet: a.mp4"})
 
 
 if __name__ == "__main__":

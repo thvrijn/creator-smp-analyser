@@ -99,7 +99,7 @@ class TranscribeStreamCommandTest extends TestCase
         Http::fake(['*' => Http::response(['segments' => []])]);
 
         $this->artisan('stream:transcribe', ['stream' => $stream->id, '--sync' => true])
-            ->expectsOutput('Transcription produced no non-empty segments.')
+            ->expectsOutput('De transcriptie leverde geen tekst op.')
             ->assertExitCode(1);
 
         $this->assertDatabaseHas('transcript_segments', ['text' => 'Existing transcript']);

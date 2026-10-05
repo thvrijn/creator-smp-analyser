@@ -43,7 +43,7 @@ class ExtractStreamEventsJob implements ShouldQueue
         try {
             $segments = $stream->transcriptSegments->sortBy(['start_time', 'id'])->values();
             if ($segments->isEmpty()) {
-                throw new RuntimeException('The stream has no transcript segments to analyse.');
+                throw new RuntimeException('Deze stream heeft geen transcriptsegmenten om te analyseren.');
             }
 
             $events = [];
@@ -71,12 +71,13 @@ class ExtractStreamEventsJob implements ShouldQueue
                     }
                     $this->addEvent($events, $validated);
                 }
+                $stream->touch(); // still running: see Stream::isStalled()
             }
 
             $this->replaceEvents($stream, array_values($events));
             $stream->forceFill([
                 'event_extraction_status' => 'completed',
-                'event_extraction_error' => $skippedChunks === [] ? null : 'Skipped '.count($skippedChunks).' chunk(s) with unusable model output: '.implode('; ', $skippedChunks),
+                'event_extraction_error' => $skippedChunks === [] ? null : count($skippedChunks).' chunk(s) overgeslagen door onbruikbare modeloutput: '.implode('; ', $skippedChunks),
                 'event_extraction_completed_at' => now(),
             ])->save();
         } catch (\Throwable $exception) {
@@ -218,7 +219,8 @@ class ExtractStreamEventsJob implements ShouldQueue
     {
         return DB::transaction(function () use ($stream): bool {
             $locked = Stream::query()->whereKey($stream->id)->lockForUpdate()->first();
-            if ($locked === null || $locked->event_extraction_status === 'processing') {
+            // Completed: a late retry of a killed attempt after the stream was analysed again.
+            if ($locked === null || in_array($locked->event_extraction_status, ['processing', 'completed'], true)) {
                 return false;
             }
             $locked->forceFill([
@@ -235,7 +237,7 @@ class ExtractStreamEventsJob implements ShouldQueue
     {
         $stream->forceFill([
             'event_extraction_status' => 'failed',
-            'event_extraction_error' => $message !== '' ? $message : 'The event extraction job failed.',
+            'event_extraction_error' => $message !== '' ? $message : 'De event-extractie is mislukt.',
         ])->save();
     }
 }

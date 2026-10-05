@@ -22,6 +22,7 @@
 # Model caches (downloaded by `make models`)
 /worker/.cache/
 /worker/model-cache/
+/worker/.venv/
 
 # Generated files
 __pycache__/

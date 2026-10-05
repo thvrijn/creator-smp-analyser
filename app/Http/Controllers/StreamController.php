@@ -22,11 +22,11 @@ class StreamController extends Controller
 {
     public function index(): Response
     {
-        $streams = Stream::query()->with('player:id,name')->withCount('transcriptSegments')->latest('started_at')->get();
+        $streams = Stream::query()->with('player:id,name,photo_path,updated_at')->withCount('transcriptSegments')->latest('started_at')->get();
 
         return Inertia::render('Streams/Index', [
             'streams' => StreamResource::collection($streams)->resolve(),
-            'players' => Player::query()->orderBy('name')->get(['id', 'name']),
+            'players' => Player::query()->orderByName()->get(['id', 'name']),
         ]);
     }
 
@@ -47,7 +47,7 @@ class StreamController extends Controller
                     $videoPath = $video->store("streams/{$stream->id}/video", $diskName);
 
                     if ($videoPath === false) {
-                        throw new RuntimeException('The stream video could not be stored.');
+                        throw new RuntimeException('De streamvideo kon niet worden opgeslagen.');
                     }
 
                     $stream->update([
@@ -66,7 +66,7 @@ class StreamController extends Controller
             throw $exception;
         }
 
-        return $this->backToStreams()->with('success', 'Stream added successfully.');
+        return $this->backToStreams()->with('success', 'Stream toegevoegd.');
     }
 
     public function destroy(Stream $stream): RedirectResponse
@@ -74,24 +74,24 @@ class StreamController extends Controller
         $disk = Storage::disk(config('filesystems.default'));
 
         if ($stream->video_path !== null && ! $disk->delete($stream->video_path)) {
-            throw new RuntimeException('The stream video could not be deleted.');
+            throw new RuntimeException('De streamvideo kon niet worden verwijderd.');
         }
 
         $stream->delete();
 
-        return $this->backToStreams()->with('success', 'Stream deleted successfully.');
+        return $this->backToStreams()->with('success', 'Stream verwijderd.');
     }
 
     public function transcribe(Stream $stream): RedirectResponse
     {
         if (blank($stream->video_path)) {
-            return $this->backToStreams()->with('error', 'This stream has no video file.');
+            return $this->backToStreams()->with('error', 'Deze stream heeft geen videobestand.');
         }
-        if (in_array($stream->transcription_status, ['queued', 'processing'], true)) {
-            return $this->backToStreams()->with('error', 'This stream is already queued or being transcribed.');
+        if (in_array($stream->transcription_status, ['queued', 'processing'], true) && ! $stream->isStalled('transcription_status')) {
+            return $this->backToStreams()->with('error', 'Deze stream staat al in de wachtrij of wordt al getranscribeerd.');
         }
         if (! Storage::disk(config('filesystems.default'))->exists($stream->video_path)) {
-            return $this->backToStreams()->with('error', 'The stream video does not exist.');
+            return $this->backToStreams()->with('error', 'De streamvideo bestaat niet.');
         }
 
         try {
@@ -111,7 +111,7 @@ class StreamController extends Controller
         } catch (\Throwable $exception) {
             $stream->forceFill([
                 'transcription_status' => 'failed',
-                'transcription_error' => 'The transcription job could not be queued: '.$exception->getMessage(),
+                'transcription_error' => 'De transcriptie kon niet aan de wachtrij worden toegevoegd: '.$exception->getMessage(),
             ])->save();
 
             return $this->backToStreams()->with('error', 'Transcriptie kon niet aan de wachtrij worden toegevoegd.');
@@ -134,6 +134,8 @@ class StreamController extends Controller
             'error' => $stream->transcription_error,
             'event_extraction_status' => $stream->event_extraction_status,
             'event_extraction_error' => $stream->event_extraction_error,
+            'transcription_stalled' => $stream->isStalled('transcription_status'),
+            'event_extraction_stalled' => $stream->isStalled('event_extraction_status'),
         ]);
     }
 
@@ -142,8 +144,8 @@ class StreamController extends Controller
         if ($stream->transcription_status !== 'completed' || $stream->transcriptSegments()->doesntExist()) {
             return $this->backToStreams()->with('error', 'Complete transcriptie is nodig voordat events kunnen worden geëxtraheerd.');
         }
-        if (in_array($stream->event_extraction_status, ['queued', 'processing'], true)) {
-            return $this->backToStreams()->with('error', 'Event extraction staat al in de wachtrij of is bezig voor deze stream.');
+        if (in_array($stream->event_extraction_status, ['queued', 'processing'], true) && ! $stream->isStalled('event_extraction_status')) {
+            return $this->backToStreams()->with('error', 'Event-extractie staat al in de wachtrij of is bezig voor deze stream.');
         }
 
         try {
@@ -157,20 +159,20 @@ class StreamController extends Controller
         } catch (\Throwable $exception) {
             $stream->forceFill([
                 'event_extraction_status' => 'failed',
-                'event_extraction_error' => 'The event extraction job could not be queued: '.$exception->getMessage(),
+                'event_extraction_error' => 'De event-extractie kon niet aan de wachtrij worden toegevoegd: '.$exception->getMessage(),
             ])->save();
 
-            return $this->backToStreams()->with('error', 'Event extraction kon niet aan de wachtrij worden toegevoegd.');
+            return $this->backToStreams()->with('error', 'Event-extractie kon niet aan de wachtrij worden toegevoegd.');
         }
 
-        return $this->backToStreams()->with('success', 'Event extraction toegevoegd aan de wachtrij.');
+        return $this->backToStreams()->with('success', 'Event-extractie toegevoegd aan de wachtrij.');
     }
 
     private const SEGMENTS_PER_PAGE = 50;
 
     public function show(Request $request, Stream $stream): Response
     {
-        $stream->load('player:id,name')->loadCount('transcriptSegments');
+        $stream->load('player:id,name,photo_path,updated_at')->loadCount('transcriptSegments');
         $search = trim((string) $request->query('search', ''));
         $search = $search !== '' ? mb_substr($search, 0, 100) : null;
 
@@ -214,6 +216,7 @@ class StreamController extends Controller
                 'confidence' => (float) $event->confidence,
                 'segment_count' => $event->transcriptSegments->count(),
             ])->values()->all(),
+            'clips' => $stream->clips()->orderBy('start_seconds')->orderBy('id')->get()->map->payload()->values()->all(),
             'selected_event_id' => $selectedEvent?->id,
             'highlighted_segment_ids' => $highlighted,
             'segments' => [

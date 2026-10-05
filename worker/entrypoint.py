@@ -33,14 +33,14 @@ class ProcessingError(Exception):
 def resolve_stream_file(video_path: str) -> Path:
     candidate_path = Path(video_path)
     if candidate_path.is_absolute() or ".." in candidate_path.parts:
-        raise ProcessingError("video_path must be a relative storage path")
+        raise ProcessingError("video_path moet een relatief pad binnen de opslag zijn")
     resolved = (STORAGE_ROOT / candidate_path).resolve()
     try:
         resolved.relative_to(STORAGE_ROOT)
     except ValueError as exc:
-        raise ProcessingError("video_path points outside the storage directory") from exc
+        raise ProcessingError("video_path wijst naar een plek buiten de opslagmap") from exc
     if not resolved.is_file():
-        raise ProcessingError(f"stream file does not exist: {video_path}")
+        raise ProcessingError(f"streambestand bestaat niet: {video_path}")
     return resolved
 
 
@@ -49,13 +49,13 @@ def probe_duration(video_file: Path) -> float:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
     except subprocess.TimeoutExpired as exc:
-        raise ProcessingError("FFprobe timed out while determining stream duration") from exc
+        raise ProcessingError("FFprobe deed er te lang over om de streamduur te bepalen") from exc
     if result.returncode != 0:
-        raise ProcessingError(f"FFprobe failed: {result.stderr.strip() or 'unknown FFprobe error'}")
+        raise ProcessingError(f"FFprobe mislukt: {result.stderr.strip() or 'onbekende FFprobe-fout'}")
     try:
         return max(0.0, float(result.stdout.strip()))
     except ValueError as exc:
-        raise ProcessingError("FFprobe returned an invalid stream duration") from exc
+        raise ProcessingError("FFprobe gaf een ongeldige streamduur") from exc
 
 
 def progress_for(processed_seconds: float, duration_seconds: float) -> int:
@@ -90,11 +90,26 @@ def extract_audio(
         return_code = process.wait(timeout=FFMPEG_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
         process.kill()
-        raise ProcessingError("FFmpeg timed out while extracting audio") from exc
+        raise ProcessingError("FFmpeg deed er te lang over om de audio te extraheren") from exc
     if return_code != 0:
-        raise ProcessingError(f"FFmpeg failed: {stderr.strip() or 'unknown FFmpeg error'}")
+        raise ProcessingError(f"FFmpeg mislukt: {stderr.strip() or 'onbekende FFmpeg-fout'}")
     if on_progress is not None and duration_seconds > 0:
         on_progress(duration_seconds)
+
+
+def transcription_spans(ranges: list[list[float]] | None, duration: float) -> list[tuple[float, float]]:
+    """The parts of the file to transcribe: the given [start, end] ranges clipped to the file and merged; without ranges the whole file."""
+    if not ranges:
+        return [(0.0, duration)]
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted((max(0.0, float(start)), min(duration, float(end))) for start, end in ranges):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def load_whisper_model() -> WhisperModel:
@@ -107,55 +122,63 @@ def unload_whisper_model(model: Any) -> None:
         ctranslate2_model.unload_model()
 
 
-def transcribe_stream(stream_id: int, video_path: str, emit: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+def transcribe_stream(stream_id: int, video_path: str, emit: Callable[[dict[str, Any]], None] | None = None, ranges: list[list[float]] | None = None) -> dict[str, Any]:
     # Hold Whisper for the whole stream so event requests cannot swap it out between chunks.
     with MODELS.use("whisper", load_whisper_model, unload_whisper_model) as model:
-        return _transcribe_stream(model, stream_id, video_path, emit)
+        return _transcribe_stream(model, stream_id, video_path, emit, ranges)
 
 
-def _transcribe_stream(model: Any, stream_id: int, video_path: str, emit: Callable[[dict[str, Any]], None] | None) -> dict[str, Any]:
+def _transcribe_stream(model: Any, stream_id: int, video_path: str, emit: Callable[[dict[str, Any]], None] | None, ranges: list[list[float]] | None = None) -> dict[str, Any]:
     video_file = resolve_stream_file(video_path)
-    duration = probe_duration(video_file)
+    # Only these parts are transcribed (e.g. the Creator SMP part of a Twitch VOD). Segment times stay file times;
+    # duration and progress count the transcribed parts only.
+    spans = transcription_spans(ranges, probe_duration(video_file))
+    duration = sum(end - start for start, end in spans)
     send = emit or (lambda _event: None)
     send({"type": "duration", "duration_seconds": duration})
     send({"type": "stage", "stage": "extracting_audio"})
 
     with tempfile.TemporaryDirectory(prefix=f"creatorsmp4-{stream_id}-") as temporary_directory:
         result_segments = []
-        chunk_start = 0.0
-        while chunk_start < duration:
-            chunk_duration = min(WHISPER_CHUNK_SECONDS, duration - chunk_start)
-            audio_file = Path(temporary_directory) / f"audio-{int(chunk_start)}.wav"
-            last_progress = -1
+        done = 0.0  # transcribed seconds of the spans before the current one
+        for span_start, span_end in spans:
+            chunk_start = span_start
+            while chunk_start < span_end:
+                chunk_duration = min(WHISPER_CHUNK_SECONDS, span_end - chunk_start)
+                audio_file = Path(temporary_directory) / f"audio-{int(chunk_start)}.wav"
+                chunk_done = done + chunk_start - span_start
+                last_progress = -1
 
-            def extraction_progress(processed: float) -> None:
-                nonlocal last_progress
-                global_processed = chunk_start + min(chunk_duration, max(0.0, processed))
-                progress = progress_for(global_processed, duration)
-                if progress != last_progress:
-                    last_progress = progress
-                    send({"type": "progress", "stage": "extracting_audio", "processed_seconds": global_processed, "progress": progress, "segment_count": len(result_segments)})
+                def extraction_progress(processed: float) -> None:
+                    nonlocal last_progress
+                    global_processed = chunk_done + min(chunk_duration, max(0.0, processed))
+                    progress = progress_for(global_processed, duration)
+                    if progress != last_progress:
+                        last_progress = progress
+                        send({"type": "progress", "stage": "extracting_audio", "processed_seconds": global_processed, "progress": progress, "segment_count": len(result_segments)})
 
-            extract_audio(video_file, audio_file, extraction_progress, chunk_duration, chunk_start)
-            send({"type": "stage", "stage": "transcribing", "processed_seconds": chunk_start, "progress": progress_for(chunk_start, duration), "segment_count": len(result_segments)})
-            try:
-                segments, _info = model.transcribe(str(audio_file), language=LANGUAGE, vad_filter=True)
-                for segment in segments:
-                    text = segment.text.strip()
-                    if not text:
-                        continue
-                    item = {
-                        "start": chunk_start + float(segment.start),
-                        "end": chunk_start + float(segment.end),
-                        "text": text,
-                    }
-                    result_segments.append(item)
-                    send({"type": "segment", **item})
-                    send({"type": "progress", "stage": "transcribing", "processed_seconds": min(duration, item["end"]), "progress": progress_for(item["end"], duration), "segment_count": len(result_segments)})
-            except Exception as exc:
-                raise ProcessingError(f"Whisper failed: {exc}") from exc
-            audio_file.unlink(missing_ok=True)
-            chunk_start += chunk_duration
+                extract_audio(video_file, audio_file, extraction_progress, chunk_duration, chunk_start)
+                send({"type": "stage", "stage": "transcribing", "processed_seconds": chunk_done, "progress": progress_for(chunk_done, duration), "segment_count": len(result_segments)})
+                try:
+                    segments, _info = model.transcribe(str(audio_file), language=LANGUAGE, vad_filter=True)
+                    for segment in segments:
+                        text = segment.text.strip()
+                        if not text:
+                            continue
+                        item = {
+                            "start": chunk_start + float(segment.start),
+                            "end": chunk_start + float(segment.end),
+                            "text": text,
+                        }
+                        result_segments.append(item)
+                        send({"type": "segment", **item})
+                        processed = min(duration, chunk_done + float(segment.end))
+                        send({"type": "progress", "stage": "transcribing", "processed_seconds": processed, "progress": progress_for(processed, duration), "segment_count": len(result_segments)})
+                except Exception as exc:
+                    raise ProcessingError(f"Whisper mislukt: {exc}") from exc
+                audio_file.unlink(missing_ok=True)
+                chunk_start += chunk_duration
+            done += span_end - span_start
 
     send({"type": "completed", "stage": "completed", "processed_seconds": duration, "progress": 100, "segment_count": len(result_segments)})
     return {"stream_id": stream_id, "segments": result_segments}
@@ -192,9 +215,9 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             payload = self.read_payload()
             segments = payload.get("segments", []) if isinstance(payload, dict) else None
             if not isinstance(segments, list):
-                raise ValueError("segments must be a list")
+                raise ValueError("segments moet een lijst zijn")
         except (TypeError, ValueError) as exc:
-            self.send_json_error(f"Invalid event extraction request: {exc}", status=400)
+            self.send_json_error(f"Ongeldig event-extractieverzoek: {exc}", status=400)
             return
         try:
             events = _event_extractor.extract(segments)
@@ -202,7 +225,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             self.send_json_error(str(exc), status=422)
             return
         except Exception as exc:
-            self.send_json_error(f"Worker error: {exc}", status=500)
+            self.send_json_error(f"Workerfout: {exc}", status=500)
             return
         self.send_json({"events": events})
 
@@ -211,8 +234,11 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self.read_payload()
             stream_id, video_path = int(payload["stream_id"]), str(payload["video_path"])
+            ranges = payload.get("ranges")
+            if ranges is not None:
+                ranges = [[float(start), float(end)] for start, end in ranges]
         except (KeyError, TypeError, ValueError) as exc:
-            self.send_json_error(f"Invalid transcription request: {exc}", status=400)
+            self.send_json_error(f"Ongeldig transcriptieverzoek: {exc}", status=400)
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
@@ -220,11 +246,11 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         try:
-            transcribe_stream(stream_id, video_path, self.write_event)
+            transcribe_stream(stream_id, video_path, self.write_event, ranges)
         except (ProcessingError, RuntimeError, ValueError) as exc:
             self.write_error_event(str(exc))
         except Exception as exc:
-            self.write_error_event(f"Worker error: {exc}")
+            self.write_error_event(f"Workerfout: {exc}")
 
     def send_json_error(self, message: str, status: int) -> None:
         print(f"worker: {self.path} failed ({status}): {message}", flush=True)

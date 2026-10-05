@@ -149,7 +149,8 @@ class TranscribeStreamJob implements ShouldQueue
     {
         return DB::transaction(function () use ($stream): bool {
             $locked = Stream::query()->whereKey($stream->id)->lockForUpdate()->first();
-            if ($locked === null || $locked->transcription_status === 'processing') {
+            // Completed: a late retry of a killed attempt after the stream was transcribed again; it would replace the segments.
+            if ($locked === null || in_array($locked->transcription_status, ['processing', 'completed'], true)) {
                 return false;
             }
             $locked->forceFill([
@@ -173,7 +174,7 @@ class TranscribeStreamJob implements ShouldQueue
         $stream->forceFill([
             'transcription_status' => 'failed',
             'transcription_stage' => 'failed',
-            'transcription_error' => $message !== '' ? $message : 'The transcription job failed.',
+            'transcription_error' => $message !== '' ? $message : 'De transcriptie is mislukt.',
             'transcription_eta_seconds' => null,
         ])->save();
     }

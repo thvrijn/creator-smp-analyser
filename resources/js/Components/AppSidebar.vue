@@ -6,15 +6,15 @@ type NavItem = { label: string; href: string; icon: string };
 const page = usePage();
 const currentPath = computed(() => page.url.split('?')[0]);
 const sections: { label: string; items: NavItem[] }[] = [
-    { label: '', items: [{ label: 'Dashboard', href: '/dashboard', icon: 'grid' }, { label: 'Overview', href: '/overview', icon: 'timeline' }] },
-    { label: 'Analysis', items: [
+    { label: '', items: [{ label: 'Dashboard', href: '/dashboard', icon: 'grid' }, { label: 'Overzicht', href: '/overview', icon: 'timeline' }] },
+    { label: 'Analyse', items: [
         { label: 'Streams', href: '/streams', icon: 'play' },
-        { label: 'Players', href: '/players', icon: 'users' },
-        { label: 'Timeline', href: '/timeline', icon: 'timeline' },
+        { label: 'Spelers', href: '/players', icon: 'users' },
+        { label: 'Tijdlijn', href: '/timeline', icon: 'timeline' },
         { label: 'Events', href: '/events', icon: 'spark' },
     ] },
-    { label: 'Media', items: [{ label: 'Video Builder', href: '/video-builder', icon: 'film' }] },
-    { label: 'System', items: [{ label: 'Settings', href: '/settings', icon: 'settings' }] },
+    { label: 'Media', items: [{ label: 'Videobouwer', href: '/video-builder', icon: 'film' }] },
+    { label: 'Systeem', items: [{ label: 'Instellingen', href: '/settings', icon: 'settings' }] },
 ];
 const isActive = (href: string) => currentPath.value === href || currentPath.value.startsWith(href + '/');
 </script>
@@ -23,9 +23,9 @@ const isActive = (href: string) => currentPath.value === href || currentPath.val
     <aside class="app-sidebar">
         <div class="sidebar-brand">
             <div class="brand-mark">C</div>
-            <div><span class="brand-name">Creator<span>SMP4</span></span><span class="brand-subtitle">Analysis workspace</span></div>
+            <div><span class="brand-name">Creator<span>SMP4</span></span><span class="brand-subtitle">Analyseomgeving</span></div>
         </div>
-        <nav class="sidebar-nav" aria-label="Main navigation">
+        <nav class="sidebar-nav" aria-label="Hoofdnavigatie">
             <div v-for="section in sections" :key="section.label || 'dashboard'" class="nav-section">
                 <p v-if="section.label" class="nav-section-label">{{ section.label }}</p>
                 <Link v-for="item in section.items" :key="item.href" :href="item.href" class="nav-item" :class="{ 'nav-item-active': isActive(item.href) }" :aria-current="isActive(item.href) ? 'page' : undefined">
@@ -40,6 +40,6 @@ const isActive = (href: string) => currentPath.value === href || currentPath.val
                 </Link>
             </div>
         </nav>
-        <div class="sidebar-footer"><div class="system-status"><span class="status-dot" />All systems operational</div><span class="version-label">v0.1.0 · Development</span></div>
+        <div class="sidebar-footer"><div class="system-status"><span class="status-dot" />Alle systemen werken</div><span class="version-label">v0.1.0 · Ontwikkeling</span></div>
     </aside>
 </template>

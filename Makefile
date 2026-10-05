@@ -2,7 +2,21 @@
 
 COMPOSE := docker compose
 
-.PHONY: help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test prompt-eval
+ifeq ($(shell uname -s),Darwin)
+# macOS: Docker cannot reach the Apple GPU, so the worker runs natively (MLX on Metal) and
+# docker-compose.mac.yml leaves it out of Docker. Both exports also reach scripts/check.sh.
+export COMPOSE_FILE := docker-compose.yml:docker-compose.mac.yml
+export WORKER_PY := $(CURDIR)/scripts/worker-mac.sh
+WORKER_DIR := $(CURDIR)/worker
+WORKER_LOG := storage/logs/worker.log
+# The [w] keeps pkill/pgrep from matching the recipe's own shell.
+WORKER_MATCH := $(CURDIR)/[w]orker/entrypoint.py
+else
+export WORKER_PY := $(COMPOSE) exec -T worker python3
+WORKER_DIR := /worker
+endif
+
+.PHONY: idle help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-restart
 
 help:
 	@echo "CreatorSMP4 development commands:"
@@ -28,29 +42,73 @@ help:
 	@echo "  make prompt-eval            Score the event prompt on synthetic SMP chunks (uses the GPU)"
 
 # Rebuilds only what changed (Docker layer cache), so requirement changes are never missed.
-start:
+start: idle .env
+	mkdir -p storage/app/private storage/framework/cache storage/framework/sessions storage/framework/views storage/logs
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
+	@$(MAKE) --no-print-directory worker-up
 	@$(MAKE) --no-print-directory test-db
 	@$(MAKE) --no-print-directory models
 	@$(MAKE) --no-print-directory check
 
 start-build: start
 
+# Fresh checkout: a .env with its own APP_KEY.
+.env:
+	sed "s|^APP_KEY=$$|APP_KEY=base64:$$(openssl rand -base64 32)|" .env.example > $@
+
 test-db:
 	@$(COMPOSE) exec -T postgres psql -U creatorsmp4 -d creatorsmp4 -tAc "SELECT 1 FROM pg_database WHERE datname='creatorsmp4_test'" | grep -q 1 \
 		|| $(COMPOSE) exec -T postgres psql -U creatorsmp4 -d creatorsmp4 -c "CREATE DATABASE creatorsmp4_test OWNER creatorsmp4"
 
 models:
-	$(COMPOSE) exec -T worker python3 /worker/prefetch_models.py
+	$(WORKER_PY) $(WORKER_DIR)/prefetch_models.py
 
 check:
 	@./scripts/check.sh
 
-stop:
-	$(COMPOSE) down
+# A restart kills a running job and leaves its stream on "processing", so these refuse while one runs. FORCE=1 goes ahead.
+idle:
+	@running=$$($(COMPOSE) exec -T postgres psql -U creatorsmp4 -d creatorsmp4 -tAc "SELECT string_agg(id::text, ', ') FROM streams WHERE 'processing' IN (transcription_status, event_extraction_status, video_download_status)" 2>/dev/null); \
+	if [ -n "$$running" ] && [ -z "$(FORCE)" ]; then echo "A job is running for stream(s) $$running; restarting would kill it. Wait for it, or use FORCE=1."; exit 1; fi
 
-restart:
+stop: idle
+	$(COMPOSE) down
+	@$(MAKE) --no-print-directory worker-down
+
+restart: idle
 	$(COMPOSE) restart
+	@$(MAKE) --no-print-directory worker-up
+
+ifeq ($(shell uname -s),Darwin)
+# Installs ffmpeg and the worker venv; reruns only when requirements-mac.txt changes. uv brings its
+# own standalone Python: Homebrew's python@3.12 can need a newer system libexpat than macOS has.
+worker/.venv/installed: worker/requirements-mac.txt
+	brew list ffmpeg uv >/dev/null 2>&1 || brew install ffmpeg uv
+	uv venv --allow-existing --python 3.12 worker/.venv
+	uv pip install --python worker/.venv -r worker/requirements-mac.txt
+	touch $@
+
+worker-up: idle worker/.venv/installed worker-down
+	@mkdir -p storage/logs
+	nohup $(WORKER_PY) $(WORKER_DIR)/entrypoint.py >> $(WORKER_LOG) 2>&1 &
+
+worker-down:
+	@pkill -f "$(WORKER_MATCH)" && while pgrep -f "$(WORKER_MATCH)" >/dev/null; do sleep 0.2; done; true
+
+worker-restart: worker-up
+
+logs-worker:
+	tail -n 100 -f $(WORKER_LOG)
+else
+# The worker is a compose service here, so up/down/restart already cover it.
+worker-up worker-down: ;
+
+worker-restart: idle
+	$(COMPOSE) restart worker
+
+logs-worker:
+	$(COMPOSE) logs -f --tail=100 worker
+endif
 
 ps:
 	$(COMPOSE) ps
@@ -63,9 +121,6 @@ logs-app:
 
 logs-queue:
 	$(COMPOSE) logs -f --tail=100 queue
-
-logs-worker:
-	$(COMPOSE) logs -f --tail=100 worker
 
 shell:
 	$(COMPOSE) exec app sh
@@ -86,8 +141,8 @@ build:
 	$(COMPOSE) exec -T app npm run build
 
 worker-test:
-	$(COMPOSE) exec -T worker python3 -m unittest discover -s /worker -p "test_*.py"
+	$(WORKER_PY) -m unittest discover -s $(WORKER_DIR) -p "test_*.py"
 
 prompt-eval:
-	$(COMPOSE) restart worker
-	$(COMPOSE) exec -T worker python3 -W ignore /worker/prompt_eval.py
+	@$(MAKE) --no-print-directory worker-restart
+	$(WORKER_PY) -W ignore $(WORKER_DIR)/prompt_eval.py

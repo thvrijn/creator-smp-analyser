@@ -1,2 +1,2 @@
 <script setup lang="ts">import { Head } from '@inertiajs/vue3'; import EmptyState from '../Components/EmptyState.vue'; import AppLayout from '../Layouts/AppLayout.vue';</script>
-<template><Head title="Settings" /><AppLayout title="Settings" eyebrow="System"><div class="standalone-panel"><EmptyState title="Settings are not available yet" description="Workspace configuration will be added in a later step." /></div></AppLayout></template>
+<template><Head title="Instellingen" /><AppLayout title="Instellingen" eyebrow="Systeem"><div class="standalone-panel"><EmptyState title="Instellingen zijn nog niet beschikbaar" description="Instellingen voor de werkplek komen in een latere stap." /></div></AppLayout></template>

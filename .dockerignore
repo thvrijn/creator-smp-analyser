@@ -4,3 +4,7 @@ vendor
 storage
 public/build
 *.log
+# The Python worker has its own image; its venv and model caches are gigabytes (the app mounts the project anyway).
+worker
+# Secrets: the app reads .env from the bind mount, not from the image.
+.env

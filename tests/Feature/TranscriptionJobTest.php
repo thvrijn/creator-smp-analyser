@@ -92,6 +92,20 @@ class TranscriptionJobTest extends TestCase
         $this->assertSame(1, $stream->transcriptSegments()->count());
     }
 
+    public function test_only_the_transcription_ranges_are_sent_to_the_worker(): void
+    {
+        Storage::fake('local');
+        $stream = $this->createStream('streams/1/video/stream.mp4');
+        Storage::disk('local')->put($stream->video_path, 'video');
+        $stream->update(['transcription_status' => 'queued', 'transcription_stage' => 'queued', 'transcription_ranges' => [[0, 793], [10000, 18801]]]);
+        Http::fake(['*/transcribe' => Http::response(json_encode(['type' => 'segment', 'start' => 10001, 'end' => 10003, 'text' => 'Hallo'])."\n")]);
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class));
+
+        Http::assertSent(fn ($request) => $request['ranges'] === [[0, 793], [10000, 18801]]);
+        $this->assertSame('completed', $stream->refresh()->transcription_status);
+    }
+
     public function test_transcription_status_endpoint_returns_telemetry(): void
     {
         $stream = $this->createStream();

@@ -1,70 +1,57 @@
 <script setup lang="ts">
-import { Head, router, useForm, usePage } from '@inertiajs/vue3';
+import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import { computed, ref } from 'vue';
 import EmptyState from '../../Components/EmptyState.vue';
+import PlayerAvatar from '../../Components/PlayerAvatar.vue';
+import PlayerFormModal from '../../Components/PlayerFormModal.vue';
 import AppLayout from '../../Layouts/AppLayout.vue';
+import type { EditablePlayer } from '../../types/streams';
 
-type Player = { id: number; name: string; streams_count: number; created_at: string };
+type Player = EditablePlayer & { streams_count: number; created_at: string };
 
 const props = defineProps<{ players: Player[] }>();
 const page = usePage<{ flash?: { success?: string; error?: string } }>();
 const showForm = ref(false);
 const editingPlayer = ref<Player | null>(null);
-const form = useForm({ name: '' });
 const successMessage = computed(() => page.props.flash?.success);
 const errorMessage = computed(() => page.props.flash?.error);
 
-const formatDate = (value: string) => new Intl.DateTimeFormat('en-GB', {
+const formatDate = (value: string) => new Intl.DateTimeFormat('nl-NL', {
     day: '2-digit', month: 'short', year: 'numeric',
 }).format(new Date(value));
 
-const openCreateForm = () => {
-    editingPlayer.value = null;
-    form.reset();
-    form.clearErrors();
-    showForm.value = true;
+const playerUrl = (player: Player) => `/players/${player.id}`;
+// The whole row opens the player page; links and buttons inside it keep their own action.
+const openPlayer = (event: MouseEvent, player: Player) => {
+    if ((event.target as HTMLElement).closest('a, button')) return;
+    router.visit(playerUrl(player));
 };
 
-const openEditForm = (player: Player) => {
+const openForm = (player: Player | null) => {
     editingPlayer.value = player;
-    form.name = player.name;
-    form.clearErrors();
     showForm.value = true;
-};
-
-const closeForm = () => {
-    if (!form.processing) showForm.value = false;
-};
-
-const submit = () => {
-    if (editingPlayer.value) {
-        form.put(`/players/${editingPlayer.value.id}`, { onSuccess: () => { showForm.value = false; } });
-        return;
-    }
-
-    form.post('/players', { onSuccess: () => { showForm.value = false; } });
 };
 
 const removePlayer = (player: Player) => {
     if (player.streams_count > 0) {
-        window.alert(`Cannot delete ${player.name}. This player has ${player.streams_count} stream${player.streams_count === 1 ? '' : 's'}. Remove or reassign the streams first.`);
+        window.alert(`${player.name} kan niet worden verwijderd. Deze speler heeft ${player.streams_count} stream${player.streams_count === 1 ? '' : 's'}. Verwijder de streams eerst of koppel ze aan een andere speler.`);
         return;
     }
 
-    if (window.confirm(`Delete ${player.name}?`)) router.delete(`/players/${player.id}`);
+    if (window.confirm(`${player.name} verwijderen?`)) router.delete(playerUrl(player));
 };
 </script>
 
 <template>
-    <Head title="Players" />
-    <AppLayout title="Players" eyebrow="Analysis">
+    <Head title="Spelers" />
+    <AppLayout title="Spelers" eyebrow="Analyse">
         <div class="streams-toolbar">
             <div>
-                <p class="section-kicker">Analysis</p>
-                <h2 class="page-section-title">Your players</h2>
-                <p class="muted-copy">Manage the creators connected to your stream library.</p>
+                <p class="section-kicker">Analyse</p>
+                <h2 class="page-section-title">Je spelers</h2>
+                <p class="muted-copy">Beheer de creators in je streambibliotheek.</p>
             </div>
-            <button class="primary-button" type="button" @click="openCreateForm"><span>＋</span> Add Player</button>
+            <button class="primary-button" type="button" @click="openForm(null)"><span>＋</span> Speler toevoegen</button>
         </div>
 
         <div v-if="successMessage" class="success-banner" role="status">{{ successMessage }}</div>
@@ -73,28 +60,20 @@ const removePlayer = (player: Player) => {
         <div v-if="props.players.length" class="streams-panel">
             <div class="streams-table-wrap">
                 <table class="streams-table players-table">
-                    <thead><tr><th>Player</th><th>Streams</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                    <thead><tr><th>Speler</th><th>Streams</th><th>Aangemaakt</th><th><span class="sr-only">Acties</span></th></tr></thead>
                     <tbody>
-                        <tr v-for="player in props.players" :key="player.id">
-                            <td><span class="player-cell"><span class="player-avatar">{{ player.name.charAt(0) }}</span><span class="stream-title">{{ player.name }}</span></span></td>
+                        <tr v-for="player in props.players" :key="player.id" class="stream-row" @click="openPlayer($event, player)">
+                            <td><Link class="player-cell" :href="playerUrl(player)"><PlayerAvatar :name="player.name" :photo-url="player.photo_url" size="sm" /><span class="stream-title">{{ player.name }}</span></Link></td>
                             <td>{{ player.streams_count }}</td>
                             <td>{{ formatDate(player.created_at) }}</td>
-                            <td class="action-cell"><button class="text-action" type="button" @click="openEditForm(player)">Edit</button><button class="delete-button" type="button" @click="removePlayer(player)">Delete</button></td>
+                            <td class="action-cell"><button class="text-action" type="button" @click="openForm(player)">Bewerken</button><button class="delete-button" type="button" @click="removePlayer(player)">Verwijderen</button></td>
                         </tr>
                     </tbody>
                 </table>
             </div>
         </div>
-        <div v-else class="standalone-panel"><EmptyState title="No players yet" description="Add your first player to start organizing the stream library." /></div>
+        <div v-else class="standalone-panel"><EmptyState title="Nog geen spelers" description="Voeg je eerste speler toe om de streambibliotheek te ordenen." /></div>
 
-        <div v-if="showForm" class="modal-backdrop" role="presentation" @click.self="closeForm">
-            <section class="stream-modal player-modal" role="dialog" aria-modal="true" aria-labelledby="player-form-title">
-                <div class="modal-heading"><div><p class="section-kicker">Analysis</p><h2 id="player-form-title">{{ editingPlayer ? 'Edit player' : 'Add player' }}</h2></div><button class="modal-close" type="button" aria-label="Close" @click="closeForm">×</button></div>
-                <form @submit.prevent="submit">
-                    <div class="form-field"><label for="player-name">Player name</label><input id="player-name" v-model="form.name" type="text" placeholder="Sophie" autofocus /><p v-if="form.errors.name" class="form-error">{{ form.errors.name }}</p></div>
-                    <div class="modal-actions"><button class="secondary-button" type="button" @click="closeForm">Cancel</button><button class="primary-button" type="submit" :disabled="form.processing">{{ form.processing ? 'Saving…' : editingPlayer ? 'Save changes' : 'Add player' }}</button></div>
-                </form>
-            </section>
-        </div>
+        <PlayerFormModal v-model:open="showForm" :player="editingPlayer" />
     </AppLayout>
 </template>

@@ -25,10 +25,16 @@ class Stream extends Model
         'started_at',
         'ended_at',
         'source',
+        'twitch_video_id',
         'video_path',
         'video_original_filename',
         'video_mime_type',
         'video_file_size',
+        'video_download_status',
+        'video_download_progress',
+        'video_download_error',
+        'video_offset_seconds',
+        'transcription_ranges',
         'transcription_status',
         'transcription_error',
         'transcribed_at',
@@ -51,6 +57,8 @@ class Stream extends Model
             'started_at' => 'datetime',
             'ended_at' => 'datetime',
             'video_file_size' => 'integer',
+            'video_offset_seconds' => 'float',
+            'transcription_ranges' => 'array',
             'transcribed_at' => 'datetime',
             'transcription_progress' => 'integer',
             'transcription_processed_seconds' => 'float',
@@ -68,6 +76,17 @@ class Stream extends Model
         return $this->belongsTo(Player::class);
     }
 
+    /** A job saves progress at least every few seconds; this long without any means it was killed (a restart or crash). */
+    public const STALLED_AFTER_MINUTES = 10;
+
+    /** Whether the job behind this status column is on "processing" but no longer running, so it may be started again. */
+    public function isStalled(string $statusColumn): bool
+    {
+        return $this->{$statusColumn} === 'processing'
+            && $this->updated_at !== null
+            && $this->updated_at->lt(now()->subMinutes(self::STALLED_AFTER_MINUTES));
+    }
+
     public function transcriptSegments(): HasMany
     {
         return $this->hasMany(TranscriptSegment::class);
@@ -76,6 +95,11 @@ class Stream extends Model
     public function events(): HasMany
     {
         return $this->hasMany(Event::class);
+    }
+
+    public function clips(): HasMany
+    {
+        return $this->hasMany(Clip::class);
     }
 
     public function estimatedTranscriptionEta(): ?float

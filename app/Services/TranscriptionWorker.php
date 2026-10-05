@@ -20,13 +20,15 @@ class TranscriptionWorker
                 ->post(rtrim(config('services.transcription_worker.url'), '/').'/transcribe', [
                     'stream_id' => $stream->id,
                     'video_path' => $stream->video_path,
+                    // Only these parts, e.g. the Creator SMP part of a Twitch VOD; segment times stay file times.
+                    ...($stream->transcription_ranges !== null ? ['ranges' => $stream->transcription_ranges] : []),
                 ]);
         } catch (\Throwable $exception) {
-            throw new RuntimeException('The transcription worker could not be reached: '.$exception->getMessage(), 0, $exception);
+            throw new RuntimeException('De transcriptie-worker is niet bereikbaar: '.$exception->getMessage(), 0, $exception);
         }
 
         if ($response->failed()) {
-            throw new RuntimeException((string) $response->json('error', 'The transcription worker failed.'));
+            throw new RuntimeException((string) $response->json('error', 'De transcriptie-worker is mislukt.'));
         }
 
         $segments = [];
@@ -44,7 +46,7 @@ class TranscriptionWorker
                 }
                 $event = json_decode($line, true);
                 if (! is_array($event)) {
-                    throw new RuntimeException('The transcription worker returned invalid progress data.');
+                    throw new RuntimeException('De transcriptie-worker gaf ongeldige voortgangsdata.');
                 }
                 $this->handleEvent($event, $segments, $onEvent);
             }
@@ -53,13 +55,13 @@ class TranscriptionWorker
         if (trim($buffer) !== '') {
             $event = json_decode(trim($buffer), true);
             if (! is_array($event)) {
-                throw new RuntimeException('The transcription worker returned incomplete progress data.');
+                throw new RuntimeException('De transcriptie-worker gaf onvolledige voortgangsdata.');
             }
             $this->handleEvent($event, $segments, $onEvent);
         }
 
         if ($segments === []) {
-            throw new RuntimeException('Transcription produced no non-empty segments.');
+            throw new RuntimeException('De transcriptie leverde geen tekst op.');
         }
 
         return $segments;
@@ -85,7 +87,7 @@ class TranscriptionWorker
         }
 
         if (($event['type'] ?? null) === 'error') {
-            throw new RuntimeException((string) ($event['error'] ?? 'The transcription worker failed.'));
+            throw new RuntimeException((string) ($event['error'] ?? 'De transcriptie-worker is mislukt.'));
         }
 
         if (($event['type'] ?? null) === 'segment') {

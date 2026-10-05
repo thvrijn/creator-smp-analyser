@@ -339,7 +339,7 @@ class EventExtractionTest extends TestCase
 
         $stream->refresh();
         $this->assertSame('completed', $stream->event_extraction_status);
-        $this->assertStringContainsString('Skipped 1 chunk(s)', $stream->event_extraction_error);
+        $this->assertStringContainsString('1 chunk(s) overgeslagen', $stream->event_extraction_error);
         $this->assertStringContainsString('Event model returned invalid JSON', $stream->event_extraction_error);
         $this->assertSame(['Second'], Event::pluck('title')->all());
     }
@@ -354,11 +354,16 @@ class EventExtractionTest extends TestCase
         $worker->shouldReceive('extract')->once()->andReturn([$event('Second run')]);
         $worker->shouldReceive('extract')->once()->andThrow(new \RuntimeException('The event extraction worker could not be reached'));
 
+        // Like the Analyseren button, every run is queued first.
+        $queue = fn () => $stream->newQuery()->whereKey($stream->id)->update(['event_extraction_status' => 'queued']);
+        $queue();
         (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        $queue();
         (new ExtractStreamEventsJob($stream->id))->handle($worker);
         $this->assertSame(['Second run'], Event::pluck('title')->all());
 
         try {
+            $queue();
             (new ExtractStreamEventsJob($stream->id))->handle($worker);
         } catch (\RuntimeException) {
         }
@@ -378,7 +383,7 @@ class EventExtractionTest extends TestCase
             $job->handle(new EventExtractionWorker());
         } catch (\RuntimeException) {
         }
-        $this->assertStringContainsString('could not be reached', (string) $stream->refresh()->event_extraction_error);
+        $this->assertStringContainsString('niet bereikbaar', (string) $stream->refresh()->event_extraction_error);
 
         $stream->update(['event_extraction_status' => 'processing', 'event_extraction_error' => null]);
         $job->failed(new \RuntimeException('Job timed out'));

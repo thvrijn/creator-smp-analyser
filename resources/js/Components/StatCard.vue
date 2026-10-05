@@ -1,5 +1,5 @@
 <script setup lang="ts">
-withDefaults(defineProps<{ label: string; value: string; icon: string; accent?: string; meta?: string }>(), { meta: 'No activity yet' });
+withDefaults(defineProps<{ label: string; value: string; icon: string; accent?: string; meta?: string }>(), { meta: 'Nog geen activiteit' });
 </script>
 <template>
     <div class="stat-card"><div class="stat-card-top"><span class="stat-label">{{ label }}</span><span class="stat-icon" :class="'stat-icon-' + (accent ?? 'blue')">

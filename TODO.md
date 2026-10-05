@@ -10,12 +10,18 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 ## Event Extraction-basis (plan stap afronden)
 
 - [ ] Event-extractie testen op een echte SMP-stream met ontmoetingen. Stream 41 is een tips-video, en de huidige prompt is getest op zelfgemaakte SMP-fragmenten.
+- [ ] Ruis in events op echte streams verminderen. Stream "dag 1" (50 min) gaf 110 events, waarvan ~60% ruis: "Mentions …", sub-bedankjes en de intro. Meet dit met echte chunks in `make prompt-eval`.
 - [ ] Later, voor cross-stream matching: genoemde spelers als apart veld opslaan (nu alleen in titel en beschrijving)
 
 ## Features
 
+- [ ] Clips in 1080p ophalen (kiezen, bekijken en bijstellen is klaar): alleen dat stuk downloaden. Let op: ffmpeg-seek in de HLS-playlist van Twitch blijft hangen, dus zelf de benodigde `.ts`-segmenten uit de m3u8 halen en lokaal knippen. Moet binnen de bewaartermijn: Partners 60 dagen, 2 spelers maar 7 dagen.
+- [ ] Downloads op een eigen queue-worker zetten, zodat ze transcripties niet ophouden
+- [ ] Het praten met de chat vóór de gameplay overslaan bij transcriptie of analyse. Daarvoor moet bekend zijn wanneer de speler zelf joinde, en creatorsmp.nl geeft alleen wanneer iemand vertrok en hoe lang hij speelde. Optie: OCR van "<speler> joined the game" in de eigen POV, of zelf een startpunt per stream zetten.
+- [ ] Knop om alle VOD's van een speler in één keer audio te laten ophalen
+- [ ] Deaths van creatorsmp.nl ophalen voor de tijdlijn (`/api/events/{id}/deaths`: exacte tijd en bericht, geen OCR nodig)
 - [ ] Timeline-pagina bouwen (nu placeholder)
-- [ ] Video builder bouwen (nu placeholder)
+- [ ] Video builder verder bouwen: clips staan er al op servertijd. Volgende stappen: downloaden en exporteren naar een montageprogramma (FCPXML voor DaVinci Resolve/Premiere).
 - [ ] Settings-pagina bouwen (nu placeholder)
 - [ ] Knop op de Settings-pagina: "Ongebruikte video's opruimen"
   - Start een queue-job die alle video's in `storage/app/private/streams/` verwijdert waar geen stream in de database meer naar verwijst (`streams.video_path`)
@@ -40,6 +46,13 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 ## Klaar
 
+- [x] Clips kiezen (stap 1): "＋ Clip" bij events, "✂ Clip" in het transcript of de hele stream, bekijken in de ingesloten Twitch-speler, ±5 s bijstellen, en een overzicht op servertijd in de Videobouwer.
+- [x] VOD-lijst syncen per speler en voor iedereen, en per VOD de audio ophalen (met voortgangsbalk). Alleen de stukken in de categorie CreatorSMP tussen 14:00 en 00:00 worden getranscribeerd, dus ook een ander spel halverwege valt weg. Een live VOD wordt pas na afloop opgehaald.
+- [x] Twitch-kanaal per speler (`twitch_login`): de seeder vult het in, het staat in het spelerformulier en er staat een link op de spelerpagina.
+- [x] Seeder met alle 90 spelers van creatorsmp.nl/spelers, inclusief profielfoto's (`CreatorSmpPlayerSeeder`). Spelers staan nu op naam gesorteerd zonder op hoofdletters te letten.
+- [x] Spelers kunnen een foto krijgen (toevoegen/bewerken op de Spelers-pagina). Die staat overal waar een avatar staat. Een rij op de Spelers-pagina opent de spelerpagina.
+- [x] Alles in de UI in het Nederlands, ook meldingen, fouten en de event-titels van het model. Code blijft Engels, game-termen mogen Engels blijven.
+- [x] Draait ook op een Mac: `make` ziet macOS en draait de worker dan buiten Docker (Whisper op CPU, Qwen via MLX op Metal). `make start` installeert ffmpeg, uv en de venv zelf.
 - [x] CLAUDE.md / AGENTS.md aangemaakt
 - [x] Aparte testdatabase (`creatorsmp4_test`) zodat tests de dev-data niet meer wissen
 - [x] Ongebruikte video's opgeruimd
