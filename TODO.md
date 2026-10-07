@@ -34,6 +34,12 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 ## Technisch
 
+- [ ] De Pi inrichten volgens `DEPLOY.md`: een tweede self-hosted runner voor deze repo (naast die van uitzet-tracker-new), de checkout in `/opt/docker/apps/creator-smp-analyser` met `.env`, het domein in de reverse proxy naar `creatorsmp4:8000` (met een ruime uploadlimiet). Daarna de dev-data eenmalig overzetten.
+- [ ] Backups van de Pi ook buiten de Pi bewaren (`backups/` staat op dezelfde schijf)
+- [ ] Workers op de laptop, de pc (RTX 4080: `WORKER_MAX_LOADED_MODELS=2`) en de Mac installeren met `make remote-worker` (Tailscale + `worker/.env`)
+- [ ] Mac-worker automatisch laten starten (launchd-agent); de Docker-workers doen dat al (`restart: unless-stopped`)
+- [ ] Transcriptie en analyse tegelijk op één worker met genoeg VRAM (nu één taak per worker)
+
 - [ ] WSL meer geheugen geven (`.wslconfig`: `memory=12GB`, daarna `wsl --shutdown`). Nu 7,4 GB; het laden van Qwen gebruikt tot ~4,3 GB en Docker Desktop crashte eerder bij het uitpakken van de image.
 - [ ] Uitzoeken waarom `make start` de worker-image eenmalig helemaal opnieuw bouwde (build-cache kwijt?)
 
@@ -45,6 +51,10 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 -
 
 ## Klaar
+
+- [x] Automatisch deployen naar de Pi, zoals bij uitzet-tracker-new: GitHub Actions test elke push, en bij master draait de self-hosted runner op de Pi `scripts/deploy.sh` (bouwen op de Pi, wachten op lopende jobs, backup, migraties, healthcheck). Productie-image op FrankenPHP, `docker-compose.prod.yml` op het `proxy`-netwerk, `DEPLOY.md`.
+
+- [x] Workers melden zich aan bij de app (heartbeat) en de app kiest per job de beste vrije worker. Zonder worker wacht een job ("Wacht op worker"). Een worker zonder de opslag van de app haalt de audio op via een tijdelijke ondertekende URL. Workers staan bij Instellingen (uitschakelen, vergeten) en in de header. `make remote-worker` start alleen een worker op een andere machine.
 
 - [x] Clips kiezen (stap 1): "＋ Clip" bij events, "✂ Clip" in het transcript of de hele stream, bekijken in de ingesloten Twitch-speler, ±5 s bijstellen, en een overzicht op servertijd in de Videobouwer.
 - [x] VOD-lijst syncen per speler en voor iedereen, en per VOD de audio ophalen (met voortgangsbalk). Alleen de stukken in de categorie CreatorSMP tussen 14:00 en 00:00 worden getranscribeerd, dus ook een ander spel halverwege valt weg. Een live VOD wordt pas na afloop opgehaald.

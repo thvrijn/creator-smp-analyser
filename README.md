@@ -10,6 +10,10 @@ make start
 
 Dit bouwt wat gewijzigd is, start alle services, maakt de testdatabase aan, downloadt de modellen en controleert alles (inclusief GPU). Open daarna http://localhost:8000. Vite draait op http://localhost:5173 en ondersteunt hot reload via de Laravel-container.
 
+## Deployen
+
+Elke push naar `master` wordt getest en daarna automatisch naar de Raspberry Pi gedeployd (GitHub Actions + `scripts/deploy.sh`). Installatie en instellingen: [DEPLOY.md](DEPLOY.md).
+
 ## Controleren
 
 ```bash

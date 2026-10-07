@@ -2,21 +2,24 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
+use App\Models\Worker;
 use RuntimeException;
 
 class EventExtractionWorker
 {
+    public function __construct(private readonly WorkerPool $pool)
+    {
+    }
+
     /** @param array<int, array<string, mixed>> $segments */
-    public function extract(array $segments): array
+    public function extract(Worker $worker, array $segments): array
     {
         try {
-            $response = Http::timeout((int) config('services.event_worker.timeout', 1800))
-                ->post(rtrim(config('services.event_worker.url'), '/').'/extract-events', [
-                    'segments' => $segments,
-                ]);
+            $response = $this->pool->request($worker, (int) config('services.event_worker.timeout', 1800))
+                ->post('/extract-events', ['segments' => $segments]);
         } catch (\Throwable $exception) {
-            throw new RuntimeException('De event-worker is niet bereikbaar: '.$exception->getMessage(), 0, $exception);
+            $this->pool->markUnreachable($worker);
+            throw new RuntimeException("Worker {$worker->name} is niet bereikbaar: ".$exception->getMessage(), 0, $exception);
         }
 
         if ($response->status() === 422) {

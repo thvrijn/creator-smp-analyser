@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Jobs\TranscribeStreamJob;
 use App\Models\Stream;
 use App\Services\TranscriptionWorker;
+use App\Services\WorkerPool;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -29,14 +30,21 @@ class TranscribeStream extends Command
             $this->error("The stream video does not exist: {$stream->video_path}");
             return self::FAILURE;
         }
-        if (in_array($stream->transcription_status, ['queued', 'processing'], true)) {
+        if (in_array($stream->transcription_status, ['queued', 'waiting', 'processing'], true)) {
             $this->warn("Stream #{$stream->id} is already queued or being transcribed.");
             return self::SUCCESS;
         }
 
         if ($this->option('sync')) {
+            $pool = app(WorkerPool::class);
+            $worker = $pool->claim('transcribe', $stream);
+            if ($worker === null) {
+                $this->error('No free worker online (see: php artisan workers:list).');
+                return self::FAILURE;
+            }
+            $this->line("Transcribing on worker {$worker->name} ({$worker->url})...");
             try {
-                $segments = app(TranscriptionWorker::class)->transcribe($stream);
+                $segments = app(TranscriptionWorker::class)->transcribe($worker, $stream);
                 DB::transaction(function () use ($stream, $segments): void {
                     $stream->transcriptSegments()->delete();
                     $stream->transcriptSegments()->createMany($segments);
@@ -53,6 +61,8 @@ class TranscribeStream extends Command
             } catch (\Throwable $exception) {
                 $this->error($exception->getMessage());
                 return self::FAILURE;
+            } finally {
+                $pool->release($worker);
             }
             $this->info('Done: '.count($segments).' segments saved.');
             return self::SUCCESS;

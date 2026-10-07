@@ -1,5 +1,7 @@
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +29,60 @@ class WorkerTest(unittest.TestCase):
         models = patch.object(entrypoint, "MODELS", ModelManager(release_memory=lambda: None))
         models.start()
         self.addCleanup(models.stop)
+
+    def serve(self, body: bytes, status: int = 200) -> str:
+        class App(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), App)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/api/worker-files/streams/12?signature=x"
+
+    def test_a_worker_without_the_storage_downloads_the_audio_and_removes_it_afterwards(self) -> None:
+        url = self.serve(b"audio" * 1000)
+        events: list[dict] = []
+        seen: list[bytes] = []
+
+        def probe(path: Path) -> float:
+            seen.append(path.read_bytes())
+            return 100.0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(entrypoint, "STORAGE_ROOT", Path(directory).resolve()), \
+                patch.object(entrypoint, "probe_duration", side_effect=probe) as probe_mock, \
+                patch.object(entrypoint, "extract_audio"), \
+                patch.object(entrypoint, "load_whisper_model", return_value=FakeModel()):
+            result = entrypoint.transcribe_stream(12, "streams/12/audio.m4a", events.append, None, url)
+            downloaded = probe_mock.call_args.args[0]
+
+        self.assertEqual(seen, [b"audio" * 1000])
+        self.assertFalse(downloaded.exists())
+        self.assertEqual(len(result["segments"]), 1)
+        self.assertEqual(events[0], {"type": "stage", "stage": "downloading_audio", "progress": 0})
+        self.assertIn({"type": "progress", "stage": "downloading_audio", "progress": 100}, events)
+
+    def test_the_shared_storage_is_used_when_the_file_is_there(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "stream.mp4").write_bytes(b"video")
+            with patch.object(entrypoint, "STORAGE_ROOT", root), patch.object(entrypoint, "download_stream_file") as download:
+                path, downloaded = entrypoint.resolve_input(12, "stream.mp4", "http://app/file", lambda _event: None)
+        self.assertEqual((path, downloaded), (root / "stream.mp4", False))
+        download.assert_not_called()
+
+    def test_a_failed_download_is_a_processing_error(self) -> None:
+        url = self.serve(b"", status=403)
+        with self.assertRaisesRegex(entrypoint.ProcessingError, "HTTP 403"):
+            entrypoint.download_stream_file(12, url, lambda _event: None)
 
     def test_stream_file_must_stay_inside_storage_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

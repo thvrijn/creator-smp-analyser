@@ -31,13 +31,22 @@ $COMPOSE ps --status running --services 2>/dev/null | grep -qx queue && ok "queu
 ytdlp=$($COMPOSE exec -T queue yt-dlp --version 2>/dev/null | tr -d '\r')
 [ -n "$ytdlp" ] && ok "yt-dlp $ytdlp (VOD downloads)" || fail "yt-dlp missing in the queue container (run: make start, it rebuilds the image)"
 
-# Through the app container, so this tests the worker URL the app really uses (on macOS: the host).
+# Through the app container, so this tests the URL the app reaches the local worker on (on macOS: the host).
 health=""
 for _ in $(seq 1 15); do
-    health=$($COMPOSE exec -T app sh -c 'curl -fsS "$TRANSCRIPTION_WORKER_URL/health"' 2>/dev/null) && break
+    health=$($COMPOSE exec -T app curl -fsS "${LOCAL_WORKER_URL:-http://worker:8001}/health" 2>/dev/null) && break
     sleep 1
 done
 [ -n "$health" ] && ok "python worker $health" || fail "python worker not reachable from the app (see: make logs-worker)"
+
+# The worker checks in every 15 s; the app sends jobs only to workers it saw recently.
+workers=""
+for _ in $(seq 1 20); do
+    workers=$($COMPOSE exec -T app php artisan workers:list --online 2>/dev/null | grep ' online ' | awk -F'|' '{gsub(/ /, "", $2); print $2}' | paste -sd, -)
+    [ -n "$workers" ] && break
+    sleep 1
+done
+[ -n "$workers" ] && ok "workers online: $workers" || fail "no worker checked in with the app (check WORKER_TOKEN in .env, see: make logs-worker)"
 
 # WORKER_PY comes from the Makefile: the worker container, or the native worker on macOS.
 gpu=$(${WORKER_PY:-$COMPOSE exec -T worker python3} -W ignore -c "

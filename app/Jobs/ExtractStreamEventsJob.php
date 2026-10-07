@@ -2,9 +2,12 @@
 
 namespace App\Jobs;
 
+use App\Jobs\Concerns\WaitsForWorker;
 use App\Models\Event;
 use App\Models\Stream;
+use App\Models\Worker;
 use App\Services\EventExtractionWorker;
+use App\Services\WorkerPool;
 use App\Services\InvalidModelOutputException;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -17,9 +20,10 @@ use RuntimeException;
 
 class ExtractStreamEventsJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, WaitsForWorker;
 
-    public int $tries = 2;
+    // Real errors; waiting for a free worker does not count (see WaitsForWorker).
+    public int $maxExceptions = 2;
     public int $timeout = 1800;
 
     public function __construct(public readonly int $streamId)
@@ -31,10 +35,28 @@ class ExtractStreamEventsJob implements ShouldQueue
         return [30];
     }
 
-    public function handle(EventExtractionWorker $worker): void
+    public function handle(EventExtractionWorker $extractor, WorkerPool $pool): void
     {
-        $stream = Stream::with('transcriptSegments')->find($this->streamId);
-        if ($stream === null || ! $this->markAsProcessing($stream)) {
+        $stream = Stream::find($this->streamId);
+        if ($stream === null || in_array($stream->event_extraction_status, ['processing', 'completed'], true)) {
+            return;
+        }
+        // One worker for all chunks, so its model stays loaded.
+        $worker = $this->claimWorkerOrWait($pool, $stream, 'extract', 'event_extraction_status');
+        if ($worker === null) {
+            return;
+        }
+
+        try {
+            $this->extract($extractor, $worker, $stream->load('transcriptSegments'));
+        } finally {
+            $pool->release($worker);
+        }
+    }
+
+    private function extract(EventExtractionWorker $extractor, Worker $worker, Stream $stream): void
+    {
+        if (! $this->markAsProcessing($stream)) {
             return;
         }
         // markAsProcessing saved through a locked copy; reload so later status saves are not skipped as "unchanged".
@@ -57,7 +79,7 @@ class ExtractStreamEventsJob implements ShouldQueue
                 ])->values()->all();
 
                 try {
-                    $workerEvents = $worker->extract($input);
+                    $workerEvents = $extractor->extract($worker, $input);
                 } catch (InvalidModelOutputException $exception) {
                     // Unusable model output only costs this chunk; an unreachable worker still fails the job.
                     $skippedChunks[] = sprintf('chunk %d (%s): %s', $number + 1, $this->chunkRange($chunk), $exception->getMessage());

@@ -106,6 +106,34 @@ class ModelManagerTest(unittest.TestCase):
         event_thread.join(5)
         self.assertEqual(order, ["whisper done", "event_llm loaded"])
 
+    def test_two_models_stay_loaded_on_a_large_gpu(self) -> None:
+        manager = ModelManager(idle_seconds=600, clock=self.clock, release_memory=self.release, max_loaded=2)
+        for name in ["whisper", "event_llm", "whisper", "event_llm"]:
+            with manager.use(name, self.loader(name), self.unloader):
+                pass
+        self.assertEqual(self.loads, ["whisper", "event_llm"])
+        self.assertEqual(self.unloads, [])
+        self.assertEqual(manager.loaded_models, ["whisper", "event_llm"])
+
+    def test_least_recently_used_model_is_unloaded_when_full(self) -> None:
+        manager = ModelManager(clock=self.clock, release_memory=self.release, max_loaded=2)
+        for name in ["whisper", "event_llm", "whisper", "third"]:
+            with manager.use(name, self.loader(name), self.unloader):
+                pass
+        self.assertEqual(self.unloads, ["event_llm-model"])
+        self.assertEqual(manager.loaded_models, ["whisper", "third"])
+
+    def test_each_idle_model_is_unloaded_on_its_own(self) -> None:
+        manager = ModelManager(idle_seconds=600, clock=self.clock, release_memory=self.release, max_loaded=2)
+        with manager.use("whisper", self.loader("whisper"), self.unloader):
+            pass
+        self.clock.now = 400
+        with manager.use("event_llm", self.loader("event_llm"), self.unloader):
+            pass
+        self.clock.now = 700
+        self.assertTrue(manager.unload_if_idle())
+        self.assertEqual(manager.loaded_models, ["event_llm"])
+
 
 if __name__ == "__main__":
     unittest.main()

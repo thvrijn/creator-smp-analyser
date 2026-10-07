@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -17,9 +18,9 @@ class WorkerHttpErrorTest(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def post(self, path: str, body: str) -> tuple[int, str, str]:
+    def post(self, path: str, body: str, headers: dict[str, str] | None = None) -> tuple[int, str, str]:
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
-        connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        connection.request("POST", path, body=body, headers={"Content-Type": "application/json", **(headers or {})})
         response = connection.getresponse()
         result = response.status, response.getheader("Content-Type", ""), response.read().decode()
         connection.close()
@@ -51,6 +52,15 @@ class WorkerHttpErrorTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "application/x-ndjson")
         self.assertEqual(json.loads(body), {"type": "error", "error": "streambestand bestaat niet: a.mp4"})
+
+    def test_with_a_token_set_requests_without_it_are_refused(self) -> None:
+        with patch.dict(os.environ, {"WORKER_TOKEN": "secret"}), \
+                patch.object(entrypoint._event_extractor, "extract", return_value=[]):
+            status, _, body = self.post("/extract-events", json.dumps({"segments": []}))
+            self.assertEqual(status, 401)
+            self.assertIn("token", json.loads(body)["error"])
+            status, _, body = self.post("/extract-events", json.dumps({"segments": []}), {"Authorization": "Bearer secret"})
+            self.assertEqual((status, json.loads(body)), (200, {"events": []}))
 
 
 if __name__ == "__main__":

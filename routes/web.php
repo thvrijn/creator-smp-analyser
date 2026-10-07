@@ -7,6 +7,7 @@ use App\Http\Controllers\StreamController;
 use App\Http\Controllers\ClipController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\TwitchVodController;
+use App\Http\Controllers\WorkerController;
 
 Route::get('/', function () {
     return redirect('/dashboard');
@@ -37,4 +38,6 @@ Route::get('/video-builder', [ClipController::class, 'index'])->name('video-buil
 Route::post('/streams/{stream}/clips', [ClipController::class, 'store'])->name('clips.store');
 Route::put('/clips/{clip}', [ClipController::class, 'update'])->name('clips.update');
 Route::delete('/clips/{clip}', [ClipController::class, 'destroy'])->name('clips.destroy');
-Route::get('/settings', fn () => Inertia::render('Settings'));
+Route::get('/settings', [WorkerController::class, 'settings'])->name('settings');
+Route::put('/workers/{worker}', [WorkerController::class, 'update'])->name('workers.update');
+Route::delete('/workers/{worker}', [WorkerController::class, 'destroy'])->name('workers.destroy');

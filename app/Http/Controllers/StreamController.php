@@ -22,7 +22,7 @@ class StreamController extends Controller
 {
     public function index(): Response
     {
-        $streams = Stream::query()->with('player:id,name,photo_path,updated_at')->withCount('transcriptSegments')->latest('started_at')->get();
+        $streams = Stream::query()->with(['player:id,name,photo_path,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
 
         return Inertia::render('Streams/Index', [
             'streams' => StreamResource::collection($streams)->resolve(),
@@ -87,7 +87,7 @@ class StreamController extends Controller
         if (blank($stream->video_path)) {
             return $this->backToStreams()->with('error', 'Deze stream heeft geen videobestand.');
         }
-        if (in_array($stream->transcription_status, ['queued', 'processing'], true) && ! $stream->isStalled('transcription_status')) {
+        if (in_array($stream->transcription_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('transcription_status')) {
             return $this->backToStreams()->with('error', 'Deze stream staat al in de wachtrij of wordt al getranscribeerd.');
         }
         if (! Storage::disk(config('filesystems.default'))->exists($stream->video_path)) {
@@ -136,6 +136,7 @@ class StreamController extends Controller
             'event_extraction_error' => $stream->event_extraction_error,
             'transcription_stalled' => $stream->isStalled('transcription_status'),
             'event_extraction_stalled' => $stream->isStalled('event_extraction_status'),
+            'worker_name' => $stream->activeWorker?->name,
         ]);
     }
 
@@ -144,7 +145,7 @@ class StreamController extends Controller
         if ($stream->transcription_status !== 'completed' || $stream->transcriptSegments()->doesntExist()) {
             return $this->backToStreams()->with('error', 'Complete transcriptie is nodig voordat events kunnen worden geëxtraheerd.');
         }
-        if (in_array($stream->event_extraction_status, ['queued', 'processing'], true) && ! $stream->isStalled('event_extraction_status')) {
+        if (in_array($stream->event_extraction_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('event_extraction_status')) {
             return $this->backToStreams()->with('error', 'Event-extractie staat al in de wachtrij of is bezig voor deze stream.');
         }
 

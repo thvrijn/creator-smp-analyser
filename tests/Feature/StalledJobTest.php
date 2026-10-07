@@ -23,6 +23,7 @@ class StalledJobTest extends TestCase
     {
         parent::setUp();
         $this->withoutMiddleware(ValidateCsrfToken::class);
+        $this->onlineWorker();
         Queue::fake();
         Storage::fake();
         $this->travelTo(now()->startOfMinute());
@@ -74,7 +75,7 @@ class StalledJobTest extends TestCase
         $stream->transcriptSegments()->create(['start_time' => 1, 'end_time' => 2, 'text' => 'Hallo']);
         Http::fake();
 
-        (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class));
+        (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
 
         Http::assertNothingSent();
         $this->assertSame(1, $stream->transcriptSegments()->count());

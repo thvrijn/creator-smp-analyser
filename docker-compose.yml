@@ -5,6 +5,9 @@ services:
       dockerfile: docker/php/Dockerfile
     working_dir: /var/www/html
     env_file: .env
+    environment:
+      # Several PHP server processes, so a worker downloading audio does not block the app or the heartbeats.
+      PHP_CLI_SERVER_WORKERS: ${PHP_CLI_SERVER_WORKERS:-4}
     ports:
       - "8000:8000"
       - "${VITE_PORT:-5173}:${VITE_PORT:-5173}"
@@ -55,7 +58,12 @@ services:
       context: ./worker
       dockerfile: Dockerfile
     environment:
-      WORKER_NAME: creatorsmp4-worker
+      # Checks in with the app like a remote worker would; it reads the audio from the shared storage mount.
+      WORKER_NAME: ${LOCAL_WORKER_NAME:-local-docker}
+      WORKER_APP_URL: http://app:8000
+      WORKER_PUBLIC_URL: http://worker:8001
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
+      WORKER_MAX_LOADED_MODELS: ${WORKER_MAX_LOADED_MODELS:-1}
       WORKER_STORAGE_ROOT: /var/www/html/storage/app/private
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
@@ -86,6 +94,8 @@ services:
   queue:
     # Reaps the yt-dlp and ffmpeg processes the downloads start.
     init: true
+    # Several queue processes, so a transcription on one worker does not hold up a job for another worker.
+    scale: ${QUEUE_WORKERS:-3}
     build:
       context: .
       dockerfile: docker/php/Dockerfile

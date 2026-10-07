@@ -2,8 +2,11 @@
 
 namespace App\Jobs;
 
+use App\Jobs\Concerns\WaitsForWorker;
 use App\Models\Stream;
+use App\Models\Worker;
 use App\Services\TranscriptionWorker;
+use App\Services\WorkerPool;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -14,9 +17,10 @@ use Illuminate\Support\Facades\Storage;
 
 class TranscribeStreamJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, WaitsForWorker;
 
-    public int $tries = 3;
+    // Real errors; waiting for a free worker does not count (see WaitsForWorker).
+    public int $maxExceptions = 3;
     public int $timeout = 3600;
 
     public function __construct(public readonly int $streamId)
@@ -28,10 +32,27 @@ class TranscribeStreamJob implements ShouldQueue
         return [10, 30];
     }
 
-    public function handle(TranscriptionWorker $worker): void
+    public function handle(TranscriptionWorker $transcriber, WorkerPool $pool): void
     {
         $stream = Stream::find($this->streamId);
-        if ($stream === null || ! $this->markAsProcessing($stream)) {
+        if ($stream === null || in_array($stream->transcription_status, ['processing', 'completed'], true)) {
+            return;
+        }
+        $worker = $this->claimWorkerOrWait($pool, $stream, 'transcribe', 'transcription_status', ['transcription_stage' => 'waiting_for_worker']);
+        if ($worker === null) {
+            return;
+        }
+
+        try {
+            $this->transcribe($transcriber, $worker, $stream);
+        } finally {
+            $pool->release($worker);
+        }
+    }
+
+    private function transcribe(TranscriptionWorker $transcriber, Worker $worker, Stream $stream): void
+    {
+        if (! $this->markAsProcessing($stream)) {
             return;
         }
         // markAsProcessing saved through a locked copy; reload so later status saves are not skipped as "unchanged".
@@ -55,7 +76,7 @@ class TranscribeStreamJob implements ShouldQueue
         $lastStage = null;
         $durationSeconds = null;
         try {
-            $segments = $worker->transcribe($stream, function (array $event) use ($stream, &$lastProgress, &$lastUpdateAt, &$phaseStartedAt, &$phaseStartedProcessed, &$lastStage, &$durationSeconds): void {
+            $segments = $transcriber->transcribe($worker, $stream, function (array $event) use ($stream, &$lastProgress, &$lastUpdateAt, &$phaseStartedAt, &$phaseStartedProcessed, &$lastStage, &$durationSeconds): void {
             $type = $event['type'] ?? null;
             $stage = isset($event['stage']) ? (string) $event['stage'] : null;
             $progress = isset($event['progress']) ? max(0, min(100, (int) round((float) $event['progress']))) : null;

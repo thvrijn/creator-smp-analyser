@@ -40,6 +40,7 @@ class StreamResource extends JsonResource
             'transcription_stalled' => $this->isStalled('transcription_status'),
             'event_extraction_stalled' => $this->isStalled('event_extraction_status'),
             'video_download_stalled' => $this->isStalled('video_download_status'),
+            'worker_name' => $this->activeWorker?->name,
             'status' => $this->ended_at === null ? 'Live' : 'Finished',
         ];
     }

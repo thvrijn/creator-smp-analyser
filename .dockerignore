@@ -8,3 +8,7 @@ public/build
 worker
 # Secrets: the app reads .env from the bind mount, not from the image.
 .env
+public/hot
+backups
+.github
+bootstrap/cache/*.php

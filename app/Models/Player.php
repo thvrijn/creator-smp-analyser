@@ -49,8 +49,8 @@ class Player extends Model
                 'streams',
                 'streams as transcribed_streams_count' => fn (Builder $streams) => $streams->where('transcription_status', 'completed'),
                 'streams as active_streams_count' => fn (Builder $streams) => $streams->where(fn (Builder $active) => $active
-                    ->whereIn('transcription_status', ['queued', 'processing'])
-                    ->orWhereIn('event_extraction_status', ['queued', 'processing'])),
+                    ->whereIn('transcription_status', ['queued', 'waiting', 'processing'])
+                    ->orWhereIn('event_extraction_status', ['queued', 'waiting', 'processing'])),
                 'events',
             ])
             ->withMax('streams', 'started_at');

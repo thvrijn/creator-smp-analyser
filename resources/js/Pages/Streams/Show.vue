@@ -3,7 +3,7 @@ import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import FlashMessages from '../../Components/FlashMessages.vue';
 import TwitchPlayer from '../../Components/TwitchPlayer.vue';
-import { eventBadgeClass, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionLabel } from '../../composables/streamStatus';
+import { eventBadgeClass, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../../composables/streamStatus';
 import AppLayout from '../../Layouts/AppLayout.vue';
 import { formatDate, type Stream } from '../../types/streams';
 
@@ -119,9 +119,10 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                 <h2 class="page-section-title">{{ stream.title }}</h2>
                 <p class="muted-copy"><Link class="inline-link" :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> · {{ formatDate(stream.started_at) }} · {{ formatSeconds(stream.duration_seconds) }} · {{ stream.segment_count }} segmenten · {{ events.length }} events</p>
                 <div class="stream-hero-statuses">
-                    <span class="status-pair"><span class="transcription-stage">Transcript</span><span class="transcription-badge" :class="'transcription-' + stream.transcription_status">{{ transcriptionLabel(stream.transcription_status) }}</span><span v-if="isTranscriptionActive(stream)" class="transcription-stage">{{ stageLabel(stream.transcription_stage) }} · {{ Math.round(stream.transcription_progress) }}%</span></span>
+                    <span class="status-pair"><span class="transcription-stage">Transcript</span><span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ transcriptionLabel(stream.transcription_status) }}</span><span v-if="isTranscriptionActive(stream)" class="transcription-stage">{{ stageLabel(stream.transcription_stage) }} · {{ Math.round(stream.transcription_progress) }}%</span></span>
                     <span class="status-pair"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ eventExtractionLabel(stream.event_extraction_status) }}</span></span>
                 </div>
+                <p v-if="stream.worker_name" class="transcription-stage">Draait op worker {{ stream.worker_name }}</p>
                 <p v-if="stream.transcription_stalled || stream.event_extraction_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.transcription_error" class="stream-error">{{ stream.transcription_error }}</p>
                 <p v-if="stream.event_extraction_error" class="stream-error">{{ stream.event_extraction_error }}</p>

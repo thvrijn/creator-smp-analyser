@@ -44,7 +44,7 @@ class PlayerController extends Controller
     public function show(Player $player): Response
     {
         $player = Player::query()->withStreamStats()->findOrFail($player->id);
-        $streams = $player->streams()->with('player:id,name,photo_path,updated_at')->withCount('transcriptSegments')->latest('started_at')->get();
+        $streams = $player->streams()->with(['player:id,name,photo_path,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
 
         return Inertia::render('Players/Show', [
             'player' => $player->statsPayload(),

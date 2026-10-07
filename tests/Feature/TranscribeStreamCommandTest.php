@@ -14,6 +14,12 @@ class TranscribeStreamCommandTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->onlineWorker();
+    }
+
     public function test_a_stream_without_video_cannot_be_transcribed(): void
     {
         $stream = $this->createStream();

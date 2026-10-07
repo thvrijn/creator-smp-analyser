@@ -1,0 +1,85 @@
+# Production stack on the Raspberry Pi, started by scripts/deploy.sh (never by hand with `down -v`: that deletes the data).
+# No worker here: the GPU machines (laptop, pc, Mac) check in from elsewhere (docker-compose.worker.yml).
+# Like the Pi's other apps, the app publishes no port: the reverse proxy on the external `proxy` network sends
+# the app's domain to creatorsmp4:8000.
+name: creatorsmp4
+
+x-app: &app
+  image: ${APP_IMAGE:-creatorsmp4-app:latest}
+  env_file: .env
+  volumes:
+    # Uploads, downloaded VOD audio and player photos: put STORAGE_PATH on the SSD.
+    - ${STORAGE_PATH:-./storage}:/app/storage
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile.prod
+    container_name: creatorsmp4
+    expose:
+      - "8000"
+    networks:
+      - default
+      - proxy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8000/up"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  queue:
+    <<: *app
+    # Reaps the yt-dlp and ffmpeg processes the downloads start.
+    init: true
+    # One process per worker that may run at the same time, plus one for downloads.
+    scale: ${QUEUE_WORKERS:-3}
+    command: php artisan queue:work redis --sleep=3 --tries=3 --timeout=3600 --backoff=10
+    # deploy.sh only restarts when no job runs; this lets queue:work finish its bookkeeping.
+    stop_grace_period: 30s
+    # The image's own healthcheck checks the web server, which does not run here.
+    healthcheck:
+      disable: true
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-creatorsmp4}
+      POSTGRES_USER: ${DB_USERNAME:-creatorsmp4}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  proxy:
+    external: true
+    name: proxy
+
+volumes:
+  postgres_data:
+  redis_data:

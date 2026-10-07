@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Link, router } from '@inertiajs/vue3';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { eventBadgeClass, eventExtractionLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionLabel } from '../composables/streamStatus';
+import { eventBadgeClass, eventExtractionLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../composables/streamStatus';
 import { formatDate, type Stream } from '../types/streams';
 import PlayerAvatar from './PlayerAvatar.vue';
 
@@ -62,10 +62,11 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearInterval(do
                 <div v-if="stream.twitch_video_id"><a class="twitch-link" :href="'https://www.twitch.tv/videos/' + stream.twitch_video_id" target="_blank" rel="noopener noreferrer">Bekijk op Twitch ↗</a></div>
             </td>
             <td><div class="transcription-details">
-                <span class="transcription-badge" :class="'transcription-' + stream.transcription_status">{{ transcriptionLabel(stream.transcription_status) }}</span>
+                <span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ transcriptionLabel(stream.transcription_status) }}</span>
                 <span v-if="stream.transcription_status !== 'pending'" class="transcription-stage">{{ stageLabel(stream.transcription_stage) }}</span>
                 <div v-if="isTranscriptionActive(stream)" class="progress-track"><span :style="{ width: Math.max(0, Math.min(100, stream.transcription_progress)) + '%' }" /></div>
                 <div v-if="isTranscriptionActive(stream) || stream.transcription_status === 'completed'" class="transcription-meta"><span>{{ Math.max(0, Math.min(100, stream.transcription_progress)) }}%</span><span>{{ formatSeconds(stream.transcription_processed_seconds) }} / {{ formatSeconds(stream.transcription_duration_seconds) }}</span><span v-if="displayEta(stream) !== null && stream.transcription_status === 'processing'">nog ~ {{ formatSeconds(displayEta(stream)) }}</span><span>{{ stream.transcription_segment_count }} segmenten</span></div>
+                <span v-if="stream.worker_name" class="transcription-stage">Op worker {{ stream.worker_name }}</span>
                 <p v-if="stream.transcription_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.transcription_error" class="stream-error">{{ stream.transcription_error }}</p>
                 <span v-if="stream.event_extraction_status !== 'pending'" class="event-extraction-status"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ eventExtractionLabel(stream.event_extraction_status) }}</span></span>

@@ -3,28 +3,36 @@
 namespace App\Services;
 
 use App\Models\Stream;
-use Illuminate\Support\Facades\Http;
+use App\Models\Worker;
 use RuntimeException;
 
 class TranscriptionWorker
 {
+    public function __construct(private readonly WorkerPool $pool)
+    {
+    }
+
     /**
      * @param  callable(array<string, mixed>): void|null  $onEvent
      * @return array<int, array{start_time: string, end_time: string, text: string}>
      */
-    public function transcribe(Stream $stream, ?callable $onEvent = null): array
+    public function transcribe(Worker $worker, Stream $stream, ?callable $onEvent = null): array
     {
         try {
-            $response = Http::withOptions(['stream' => true])
-                ->timeout((int) config('services.transcription_worker.timeout', 3600))
-                ->post(rtrim(config('services.transcription_worker.url'), '/').'/transcribe', [
+            $response = $this->pool->request($worker, (int) config('services.transcription_worker.timeout', 3600))
+                ->withOptions(['stream' => true])
+                ->post('/transcribe', [
                     'stream_id' => $stream->id,
+                    // A worker that shares the app's storage reads video_path; any other downloads video_url.
                     'video_path' => $stream->video_path,
+                    'video_url' => $this->pool->fileUrl($stream),
+                    'video_size' => $stream->video_file_size,
                     // Only these parts, e.g. the Creator SMP part of a Twitch VOD; segment times stay file times.
                     ...($stream->transcription_ranges !== null ? ['ranges' => $stream->transcription_ranges] : []),
                 ]);
         } catch (\Throwable $exception) {
-            throw new RuntimeException('De transcriptie-worker is niet bereikbaar: '.$exception->getMessage(), 0, $exception);
+            $this->pool->markUnreachable($worker);
+            throw new RuntimeException("Worker {$worker->name} is niet bereikbaar: ".$exception->getMessage(), 0, $exception);
         }
 
         if ($response->failed()) {

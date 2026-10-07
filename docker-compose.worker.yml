@@ -1,0 +1,36 @@
+# Only the worker, for a laptop or pc with an NVIDIA GPU that works for the app on another machine (the Pi).
+# Started by `make remote-worker`; its settings are in worker/.env (copy worker/.env.example).
+# It checks in with the app by itself, also after a reboot (restart: unless-stopped).
+name: creatorsmp4-remote-worker
+
+services:
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    # CUDA defaults first, then this machine's own settings.
+    env_file:
+      - worker/cuda.env
+      - worker/.env
+    environment:
+      WHISPER_MODEL_CACHE: /worker/.cache
+      HF_HOME: /worker/model-cache
+      WORKER_HOST: 0.0.0.0
+    ports:
+      - "${REMOTE_WORKER_PORT:-8001}:8001"
+    volumes:
+      - ./worker:/worker
+      - event_model_cache:/worker/model-cache
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  event_model_cache:
+    # The full dev stack's volume in this checkout, so the model is not downloaded twice.
+    name: creator_smp_4_recaps_event_model_cache

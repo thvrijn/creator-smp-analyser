@@ -11,12 +11,18 @@ WORKER_DIR := $(CURDIR)/worker
 WORKER_LOG := storage/logs/worker.log
 # The [w] keeps pkill/pgrep from matching the recipe's own shell.
 WORKER_MATCH := $(CURDIR)/[w]orker/entrypoint.py
+# How the app container reaches the local worker (scripts/check.sh).
+export LOCAL_WORKER_URL := http://host.docker.internal:8001
 else
 export WORKER_PY := $(COMPOSE) exec -T worker python3
 WORKER_DIR := /worker
+export LOCAL_WORKER_URL := http://worker:8001
 endif
 
-.PHONY: idle help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-restart
+# Only the worker, for a machine that works for the app elsewhere (docker-compose.worker.yml).
+REMOTE_WORKER := $(COMPOSE) -f docker-compose.worker.yml
+
+.PHONY: idle help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-restart worker-token remote-worker remote-worker-stop remote-worker-logs remote-worker-check
 
 help:
 	@echo "CreatorSMP4 development commands:"
@@ -40,9 +46,14 @@ help:
 	@echo "  make build                  Build frontend assets"
 	@echo "  make worker-test            Run Python worker tests"
 	@echo "  make prompt-eval            Score the event prompt on synthetic SMP chunks (uses the GPU)"
+	@echo ""
+	@echo "Remote worker (a laptop/pc/Mac working for the app on another machine, settings in worker/.env):"
+	@echo "  make remote-worker          Build, download the models, start the worker and check it checked in"
+	@echo "  make remote-worker-stop     Stop the worker (it signs off with the app)"
+	@echo "  make remote-worker-logs     Follow the worker's log"
 
 # Rebuilds only what changed (Docker layer cache), so requirement changes are never missed.
-start: idle .env
+start: idle .env worker-token
 	mkdir -p storage/app/private storage/framework/cache storage/framework/sessions storage/framework/views storage/logs
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
 	@$(MAKE) --no-print-directory worker-up
@@ -55,6 +66,13 @@ start-build: start
 # Fresh checkout: a .env with its own APP_KEY.
 .env:
 	sed "s|^APP_KEY=$$|APP_KEY=base64:$$(openssl rand -base64 32)|" .env.example > $@
+
+# The shared secret between the app and its workers; generated once, kept in .env.
+worker-token: .env
+	@grep -q '^WORKER_TOKEN=.' .env || { \
+		token=$$(openssl rand -hex 32); \
+		if grep -q '^WORKER_TOKEN=' .env; then sed -i.bak "s|^WORKER_TOKEN=.*|WORKER_TOKEN=$$token|" .env && rm -f .env.bak; else printf '\nWORKER_TOKEN=%s\n' "$$token" >> .env; fi; \
+		echo "Generated WORKER_TOKEN in .env (a remote worker needs the same token in its worker/.env)."; }
 
 test-db:
 	@$(COMPOSE) exec -T postgres psql -U creatorsmp4 -d creatorsmp4 -tAc "SELECT 1 FROM pg_database WHERE datname='creatorsmp4_test'" | grep -q 1 \
@@ -109,6 +127,43 @@ worker-restart: idle
 logs-worker:
 	$(COMPOSE) logs -f --tail=100 worker
 endif
+
+# A remote worker's own settings; the first run creates them from the example and stops so you can fill them in.
+worker/.env:
+	cp worker/.env.example $@
+	@echo "Created worker/.env: fill in WORKER_NAME, WORKER_PUBLIC_URL, WORKER_APP_URL and WORKER_TOKEN, then run make remote-worker again."
+	@exit 1
+
+ifeq ($(shell uname -s),Darwin)
+remote-worker: worker/.env worker/.venv/installed
+	$(WORKER_PY) $(WORKER_DIR)/prefetch_models.py
+	@$(MAKE) --no-print-directory worker-up
+	@$(MAKE) --no-print-directory remote-worker-check
+
+remote-worker-stop: worker-down
+
+remote-worker-logs: logs-worker
+else
+remote-worker: worker/.env
+	$(REMOTE_WORKER) up -d --build
+	$(REMOTE_WORKER) exec -T worker python3 /worker/prefetch_models.py
+	@$(MAKE) --no-print-directory remote-worker-check
+
+remote-worker-stop:
+	$(REMOTE_WORKER) down
+
+remote-worker-logs:
+	$(REMOTE_WORKER) logs -f --tail=100 worker
+endif
+
+# The worker answers on its port and has checked in with the app (it logs that within a few seconds).
+remote-worker-check:
+	@for i in $$(seq 1 30); do curl -fsS http://localhost:$${REMOTE_WORKER_PORT:-8001}/health >/dev/null 2>&1 && break; sleep 1; done; \
+	curl -fsS http://localhost:$${REMOTE_WORKER_PORT:-8001}/health || { echo "FAIL: the worker does not answer on port $${REMOTE_WORKER_PORT:-8001} (see: make remote-worker-logs)"; exit 1; }; echo; \
+	for i in $$(seq 1 20); do \
+		log=$$( { [ "$$(uname -s)" = Darwin ] && tail -n 50 $(WORKER_LOG) || $(REMOTE_WORKER) logs --tail=50 worker; } 2>/dev/null | grep 'registration:' | tail -1); \
+		case "$$log" in *"checked in"*) echo "ok: $${log#*registration: }"; exit 0;; esac; sleep 1; \
+	done; echo "FAIL: the worker did not check in with the app: $${log#*registration: } (check WORKER_APP_URL and WORKER_TOKEN in worker/.env)"; exit 1
 
 ps:
 	$(COMPOSE) ps

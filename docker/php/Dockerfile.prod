@@ -1,0 +1,36 @@
+# Production image for the app and the queue (docker-compose.prod.yml, the Raspberry Pi).
+# Built on the Pi itself by scripts/deploy.sh (arm64); it builds on amd64 too. The assets are built in a Node stage,
+# so the final image has no Node, no dev dependencies and no source maps of the dev server.
+# The built assets are the same on every platform, so this stage always runs natively.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS assets
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY . .
+RUN npm run build
+
+FROM dunglas/frankenphp:1-php8.3-bookworm
+# pcntl: queue:work stops cleanly on SIGTERM. ffmpeg + python3: yt-dlp downloads and cuts Twitch VODs.
+RUN install-php-extensions pdo_pgsql zip pcntl opcache \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg python3 unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+# Rebuilt on every deploy, so yt-dlp stays current (Twitch changes break old versions).
+ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp /usr/local/bin/yt-dlp
+COPY docker/php/production.ini $PHP_INI_DIR/conf.d/zz-creatorsmp4.ini
+
+# FrankenPHP (Caddy) serves public/ over plain HTTP on :8000; the Pi's reverse proxy adds HTTPS.
+ENV SERVER_NAME=:8000
+
+WORKDIR /app
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-interaction --prefer-dist --no-progress --no-scripts --no-autoloader
+COPY . .
+COPY --from=assets /app/public/build ./public/build
+RUN composer dump-autoload --no-dev --optimize --no-interaction \
+    && mkdir -p bootstrap/cache && chmod +x docker/php/entrypoint.prod.sh
+
+ENTRYPOINT ["docker/php/entrypoint.prod.sh"]
+CMD ["--config", "/etc/frankenphp/Caddyfile", "--adapter", "caddyfile"]

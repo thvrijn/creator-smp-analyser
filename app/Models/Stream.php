@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Stream extends Model
 {
@@ -79,12 +80,21 @@ class Stream extends Model
     /** A job saves progress at least every few seconds; this long without any means it was killed (a restart or crash). */
     public const STALLED_AFTER_MINUTES = 10;
 
-    /** Whether the job behind this status column is on "processing" but no longer running, so it may be started again. */
+    /**
+     * Whether the job behind this status column is on "processing" or "waiting" (for a worker) but no longer running,
+     * so it may be started again. A waiting job touches the stream on every check for a free worker.
+     */
     public function isStalled(string $statusColumn): bool
     {
-        return $this->{$statusColumn} === 'processing'
+        return in_array($this->{$statusColumn}, ['processing', 'waiting'], true)
             && $this->updated_at !== null
             && $this->updated_at->lt(now()->subMinutes(self::STALLED_AFTER_MINUTES));
+    }
+
+    /** The worker that is transcribing or analysing this stream right now. */
+    public function activeWorker(): HasOne
+    {
+        return $this->hasOne(Worker::class, 'current_stream_id');
     }
 
     public function transcriptSegments(): HasMany

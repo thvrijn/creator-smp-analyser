@@ -1,7 +1,10 @@
+import hmac
 import json
 import os
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -9,6 +12,7 @@ import time
 from typing import Any, Callable
 
 from faster_whisper import WhisperModel
+import registration
 from event_extractor import EventExtractor
 from model_manager import ModelManager
 
@@ -21,8 +25,11 @@ MODEL_CACHE = os.getenv("WHISPER_MODEL_CACHE", "/worker/.cache")
 FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT_SECONDS", "7200"))
 WHISPER_CHUNK_SECONDS = max(30, float(os.getenv("WHISPER_CHUNK_SECONDS", "300")))
 MODEL_IDLE_SECONDS = max(0.0, float(os.getenv("WORKER_MODEL_IDLE_SECONDS", "600")))
-# Whisper and the event LLM share the GPU; only one is loaded at a time.
-MODELS = ModelManager(idle_seconds=MODEL_IDLE_SECONDS)
+# Where audio downloaded from the app is kept while it is transcribed (a worker without the app's storage).
+DOWNLOAD_DIR = os.getenv("WORKER_CACHE_DIR") or None
+DOWNLOAD_TIMEOUT = float(os.getenv("WORKER_DOWNLOAD_TIMEOUT_SECONDS", "60"))
+# Whisper and the event LLM share the GPU; an 8 GB GPU holds one of them, a 16 GB GPU both (WORKER_MAX_LOADED_MODELS=2).
+MODELS = ModelManager(idle_seconds=MODEL_IDLE_SECONDS, max_loaded=int(os.getenv("WORKER_MAX_LOADED_MODELS", "1")))
 _event_extractor = EventExtractor(MODELS)
 
 
@@ -42,6 +49,54 @@ def resolve_stream_file(video_path: str) -> Path:
     if not resolved.is_file():
         raise ProcessingError(f"streambestand bestaat niet: {video_path}")
     return resolved
+
+
+def download_stream_file(stream_id: int, video_url: str, send: Callable[[dict[str, Any]], None]) -> Path:
+    """Downloads the stream's audio from the app (a signed URL) into a temporary file, reporting progress."""
+    if not video_url.startswith(("http://", "https://")):
+        raise ProcessingError("video_url moet een http(s)-URL zijn")
+    send({"type": "stage", "stage": "downloading_audio", "progress": 0})
+    handle, name = tempfile.mkstemp(prefix=f"creatorsmp4-{stream_id}-", suffix=".audio", dir=DOWNLOAD_DIR)
+    target = Path(name)
+    try:
+        with os.fdopen(handle, "wb") as file, urllib.request.urlopen(video_url, timeout=DOWNLOAD_TIMEOUT) as response:
+            total = int(response.headers.get("Content-Length") or 0)
+            received, last_progress = 0, -1
+            while chunk := response.read(1024 * 1024):
+                file.write(chunk)
+                received += len(chunk)
+                progress = progress_for(received, total)
+                if total and progress != last_progress:
+                    last_progress = progress
+                    send({"type": "progress", "stage": "downloading_audio", "progress": progress})
+        if total and received != total:
+            raise ProcessingError(f"audio onvolledig ontvangen ({received} van {total} bytes)")
+    except urllib.error.HTTPError as exc:
+        target.unlink(missing_ok=True)
+        raise ProcessingError(f"audio ophalen bij de app mislukt: HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        target.unlink(missing_ok=True)
+        raise ProcessingError(f"audio ophalen bij de app mislukt: {exc}") from exc
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    print(f"worker: downloaded stream {stream_id} audio ({received / 2**20:.0f} MB)", flush=True)
+    return target
+
+
+def resolve_input(stream_id: int, video_path: str | None, video_url: str | None, send: Callable[[dict[str, Any]], None]) -> tuple[Path, bool]:
+    """The stream's file: from the shared storage when this worker has it, else downloaded from the app.
+
+    Returns the path and whether it is a temporary download that must be removed afterwards.
+    """
+    try:
+        if not video_path:
+            raise ProcessingError("geen video_path")
+        return resolve_stream_file(video_path), False
+    except ProcessingError:
+        if not video_url:
+            raise
+    return download_stream_file(stream_id, video_url, send), True
 
 
 def probe_duration(video_file: Path) -> float:
@@ -122,19 +177,30 @@ def unload_whisper_model(model: Any) -> None:
         ctranslate2_model.unload_model()
 
 
-def transcribe_stream(stream_id: int, video_path: str, emit: Callable[[dict[str, Any]], None] | None = None, ranges: list[list[float]] | None = None) -> dict[str, Any]:
-    # Hold Whisper for the whole stream so event requests cannot swap it out between chunks.
-    with MODELS.use("whisper", load_whisper_model, unload_whisper_model) as model:
-        return _transcribe_stream(model, stream_id, video_path, emit, ranges)
+def transcribe_stream(
+    stream_id: int,
+    video_path: str | None,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+    ranges: list[list[float]] | None = None,
+    video_url: str | None = None,
+) -> dict[str, Any]:
+    send = emit or (lambda _event: None)
+    # Download first (if needed), so the GPU is not held while the audio comes in.
+    video_file, downloaded = resolve_input(stream_id, video_path, video_url, send)
+    try:
+        # Hold Whisper for the whole stream so event requests cannot swap it out between chunks.
+        with MODELS.use("whisper", load_whisper_model, unload_whisper_model) as model:
+            return _transcribe_stream(model, stream_id, video_file, send, ranges)
+    finally:
+        if downloaded:
+            video_file.unlink(missing_ok=True)
 
 
-def _transcribe_stream(model: Any, stream_id: int, video_path: str, emit: Callable[[dict[str, Any]], None] | None, ranges: list[list[float]] | None = None) -> dict[str, Any]:
-    video_file = resolve_stream_file(video_path)
+def _transcribe_stream(model: Any, stream_id: int, video_file: Path, send: Callable[[dict[str, Any]], None], ranges: list[list[float]] | None = None) -> dict[str, Any]:
     # Only these parts are transcribed (e.g. the Creator SMP part of a Twitch VOD). Segment times stay file times;
     # duration and progress count the transcribed parts only.
     spans = transcription_spans(ranges, probe_duration(video_file))
     duration = sum(end - start for start, end in spans)
-    send = emit or (lambda _event: None)
     send({"type": "duration", "duration_seconds": duration})
     send({"type": "stage", "stage": "extracting_audio"})
 
@@ -191,19 +257,30 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         if self.path != "/health":
             self.send_error(404, "Not found")
             return
-        self.send_json({"status": "ok", "loaded_model": MODELS.loaded})
+        self.send_json({"status": "ok", "name": registration.worker_name(), "loaded_models": MODELS.loaded_models, "busy": registration.ACTIVE.busy})
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path not in {"/transcribe", "/extract-events"}:
             self.send_error(404, "Not found")
             return
         try:
-            if self.path == "/extract-events":
-                self.handle_extract_events()
-            else:
-                self.handle_transcribe()
+            if not self.authorized():
+                self.send_json_error("Ongeldig of ontbrekend worker-token", status=401)
+                return
+            with registration.ACTIVE.track():
+                if self.path == "/extract-events":
+                    self.handle_extract_events()
+                else:
+                    self.handle_transcribe()
         finally:
             self.close_connection = True
+
+    def authorized(self) -> bool:
+        """With WORKER_TOKEN set (a worker reachable over the network), only the app may send work."""
+        expected = registration.token()
+        if not expected:
+            return True
+        return hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {expected}")
 
     def read_payload(self) -> Any:
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -233,7 +310,13 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         # Validate before the NDJSON stream starts, so request errors get a normal HTTP status.
         try:
             payload = self.read_payload()
-            stream_id, video_path = int(payload["stream_id"]), str(payload["video_path"])
+            stream_id = int(payload["stream_id"])
+            video_path = payload.get("video_path")
+            video_url = payload.get("video_url")
+            if not video_path and not video_url:
+                raise KeyError("video_path of video_url")
+            video_path = str(video_path) if video_path else None
+            video_url = str(video_url) if video_url else None
             ranges = payload.get("ranges")
             if ranges is not None:
                 ranges = [[float(start), float(end)] for start, end in ranges]
@@ -246,7 +329,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         try:
-            transcribe_stream(stream_id, video_path, self.write_event, ranges)
+            transcribe_stream(stream_id, video_path, self.write_event, ranges, video_url)
         except (ProcessingError, RuntimeError, ValueError) as exc:
             self.write_error_event(str(exc))
         except Exception as exc:
@@ -291,6 +374,7 @@ def main() -> None:
     print(f"transcription worker listening on {host}:{port}; model={MODEL_NAME} device={DEVICE}", flush=True)
     if MODEL_IDLE_SECONDS > 0:
         Thread(target=unload_idle_models, daemon=True).start()
+    registration.start(port, lambda: MODELS.loaded)
     ThreadingHTTPServer((host, port), WorkerRequestHandler).serve_forever()
 
 

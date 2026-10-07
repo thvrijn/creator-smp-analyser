@@ -1,12 +1,21 @@
 <?php
 
 return [
+    // Workers check in with a heartbeat (POST /api/workers/heartbeat) and the app picks a free one per job.
+    'workers' => [
+        // Shared secret: the workers send it to the app, and the app sends it to the workers.
+        'token' => env('WORKER_TOKEN'),
+        // How the workers reach the app, for the signed audio download URLs.
+        'app_url' => env('WORKER_APP_URL', env('APP_URL', 'http://localhost:8000')),
+        // A worker without a heartbeat for this long counts as offline (it sends one every 15 s).
+        'online_seconds' => (int) env('WORKER_ONLINE_SECONDS', 45),
+        // A job waits this long between checks for a free worker.
+        'wait_seconds' => (int) env('WORKER_WAIT_SECONDS', 30),
+    ],
     'transcription_worker' => [
-        'url' => env('TRANSCRIPTION_WORKER_URL', 'http://worker:8001'),
         'timeout' => (int) env('TRANSCRIPTION_WORKER_TIMEOUT', 3600),
     ],
     'event_worker' => [
-        'url' => env('EVENT_WORKER_URL', env('TRANSCRIPTION_WORKER_URL', 'http://worker:8001')),
         'timeout' => (int) env('EVENT_WORKER_TIMEOUT', 1800),
         'model' => env('EVENT_MODEL', 'unsloth/Qwen3-8B-bnb-4bit'),
         'device' => env('EVENT_DEVICE', 'cuda'),

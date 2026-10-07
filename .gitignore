@@ -4,6 +4,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 /storage/*.key
 /storage/logs/*
 /storage/framework/cache/*
@@ -29,3 +30,6 @@ __pycache__/
 *.pyc
 /public/hot
 .phpunit.result.cache
+
+# Database backups made by scripts/deploy.sh (on the Pi)
+/backups/

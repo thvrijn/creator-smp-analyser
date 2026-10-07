@@ -12,9 +12,9 @@ export type PlayerStats = EditablePlayer & {
     last_stream_at: string | null;
 };
 
-export type TranscriptionState = 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
-export type TranscriptionStage = 'not_started' | 'queued' | 'extracting_audio' | 'transcribing' | 'completed' | 'failed';
-export type EventExtractionStatus = 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
+export type TranscriptionState = 'pending' | 'queued' | 'waiting' | 'processing' | 'completed' | 'failed';
+export type TranscriptionStage = 'not_started' | 'queued' | 'waiting_for_worker' | 'downloading_audio' | 'extracting_audio' | 'transcribing' | 'completed' | 'failed';
+export type EventExtractionStatus = 'pending' | 'queued' | 'waiting' | 'processing' | 'completed' | 'failed';
 
 export type TranscriptionStatus = {
     status: TranscriptionState;
@@ -30,6 +30,7 @@ export type TranscriptionStatus = {
     event_extraction_error: string | null;
     transcription_stalled: boolean;
     event_extraction_stalled: boolean;
+    worker_name: string | null;
 };
 
 export type Stream = {
@@ -48,6 +49,8 @@ export type Stream = {
     transcription_stalled: boolean;
     event_extraction_stalled: boolean;
     video_download_stalled: boolean;
+    // The worker running this stream's transcription or analysis right now.
+    worker_name: string | null;
     video_offset_seconds: number;
     transcription_ranges: [number, number][] | null;
     transcription_status: TranscriptionState;

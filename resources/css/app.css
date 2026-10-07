@@ -215,3 +215,9 @@ a.stream-title:hover { color: #fff; text-decoration: underline; text-decoration-
 .same-moment { display: block; margin-top: 4px; color: #c7a8ff; font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .clip-side .panel-heading { gap: 12px; }.clip-side .panel-heading button { flex: none; white-space: nowrap; }
 .progress-track-small { width: 140px; }
+/* Workers: header pill (links to Settings) */
+.worker-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #56492e; border-radius: 999px; background: #3a312033; padding: 6px 11px; color: #eeb033; font-size: 11px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.worker-pill:hover { border-color: #e8a011; }
+.worker-pill-offline { border-color: #2e2e3c; background: transparent; color: #7a7a90; }
+.worker-pill-offline .status-dot { background: #5a5a6e; box-shadow: none; }
+.standalone-panel .panel-heading + .streams-table-wrap, .standalone-panel .panel-heading + .empty-state { margin-top: 18px; }

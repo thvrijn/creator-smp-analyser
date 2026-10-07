@@ -8,6 +8,7 @@ use App\Models\Player;
 use App\Models\Stream;
 use App\Models\TranscriptSegment;
 use App\Services\EventExtractionWorker;
+use App\Services\WorkerPool;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Support\Facades\Http;
@@ -23,6 +24,7 @@ class EventExtractionTest extends TestCase
     {
         parent::setUp();
         $this->withoutMiddleware(ValidateCsrfToken::class);
+        $this->onlineWorker();
     }
 
     public function test_event_extraction_requires_a_completed_transcript(): void
@@ -100,7 +102,7 @@ class EventExtractionTest extends TestCase
             return [];
         });
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $stream->refresh();
         $this->assertSame('completed', $stream->event_extraction_status);
@@ -124,7 +126,7 @@ class EventExtractionTest extends TestCase
             'segment_indexes' => [0, 1],
         ]]);
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $stream->refresh();
         $event = Event::firstOrFail();
@@ -146,7 +148,7 @@ class EventExtractionTest extends TestCase
             ['type' => 'death', 'title' => 'Creeper', 'description' => 'Killed by a creeper.', 'confidence' => 0.8, 'segment_indexes' => [0]],
         ]);
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $stream->refresh();
         $this->assertSame('completed', $stream->event_extraction_status);
@@ -162,7 +164,7 @@ class EventExtractionTest extends TestCase
         $worker = Mockery::mock(EventExtractionWorker::class);
         $worker->shouldNotReceive('extract');
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $this->assertDatabaseCount('events', 0);
     }
@@ -175,7 +177,7 @@ class EventExtractionTest extends TestCase
         $own = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Own stream line']);
         TranscriptSegment::create(['stream_id' => $other->id, 'start_time' => '2.500', 'end_time' => '4.000', 'text' => 'Other stream line 2']);
         $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturnUsing(function (array $segments): array {
+        $worker->shouldReceive('extract')->once()->andReturnUsing(function (\App\Models\Worker $claimed, array $segments): array {
             $this->assertSame(['Own stream line'], array_column($segments, 'text'));
             return [[
                 'type' => 'statement', 'title' => 'Own line', 'description' => 'A statement.',
@@ -183,7 +185,7 @@ class EventExtractionTest extends TestCase
             ]];
         });
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $event = Event::firstOrFail();
         $this->assertSame($stream->id, $event->stream_id);
@@ -202,7 +204,7 @@ class EventExtractionTest extends TestCase
             'confidence' => 0.7, 'segment_indexes' => [0, 1],
         ]]);
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $this->assertSame('completed', $stream->refresh()->event_extraction_status);
         $this->assertDatabaseCount('events', 0);
@@ -220,7 +222,7 @@ class EventExtractionTest extends TestCase
             'start_time' => 999.0, 'end_time' => 2.0, 'confidence' => 0.6, 'segment_indexes' => [1, 0, 1],
         ]]);
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $event = Event::firstOrFail();
         $this->assertSame('10.000', $event->start_time);
@@ -237,7 +239,7 @@ class EventExtractionTest extends TestCase
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '11.000', 'end_time' => '14.000', 'text' => 'Closing']);
         $calls = 0;
         $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->andReturnUsing(function (array $segments) use (&$calls): array {
+        $worker->shouldReceive('extract')->andReturnUsing(function (\App\Models\Worker $claimed, array $segments) use (&$calls): array {
             $calls++;
             $index = array_search('Alex shows up', array_column($segments, 'text'), true);
             if ($index === false) {
@@ -250,7 +252,7 @@ class EventExtractionTest extends TestCase
             ]];
         });
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $this->assertGreaterThanOrEqual(2, $calls);
         $this->assertDatabaseCount('events', 1);
@@ -270,7 +272,7 @@ class EventExtractionTest extends TestCase
             ['type' => 'death', 'title' => 'Dies', 'description' => 'Dies.', 'confidence' => 0.9, 'segment_indexes' => [1, 2]],
         ]);
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $this->assertSame(['Dies'], Event::pluck('title')->all());
     }
@@ -285,7 +287,7 @@ class EventExtractionTest extends TestCase
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '11.000', 'end_time' => '14.000', 'text' => 'Closing']);
         $calls = 0;
         $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->andReturnUsing(function (array $segments) use (&$calls): array {
+        $worker->shouldReceive('extract')->andReturnUsing(function (\App\Models\Worker $claimed, array $segments) use (&$calls): array {
             $calls++;
             $texts = array_column($segments, 'text');
             $first = array_search('Sam shows up', $texts, true);
@@ -298,7 +300,7 @@ class EventExtractionTest extends TestCase
                 : [['type' => 'player_encounter', 'title' => 'Meets Sam', 'description' => 'Meets Sam.', 'confidence' => 0.9, 'segment_indexes' => [$second]]];
         });
 
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
 
         $this->assertGreaterThanOrEqual(2, $calls);
         $this->assertSame(['Meets Sam'], Event::pluck('title')->all());
@@ -306,14 +308,13 @@ class EventExtractionTest extends TestCase
 
     public function test_worker_crash_marks_extraction_as_failed_with_error(): void
     {
-        config(['services.event_worker.url' => 'http://worker:8001']);
         Http::fake(['worker:8001/extract-events' => Http::response(['error' => 'Worker error: CUDA out of memory'], 500)]);
         $stream = $this->createStream('completed');
         $stream->update(['event_extraction_status' => 'queued']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Transcript']);
 
         try {
-            (new ExtractStreamEventsJob($stream->id))->handle(new EventExtractionWorker());
+            (new ExtractStreamEventsJob($stream->id))->handle(app(EventExtractionWorker::class), app(WorkerPool::class));
             $this->fail('The job should rethrow the worker failure so the queue can retry it.');
         } catch (\RuntimeException $exception) {
             $this->assertSame('Worker error: CUDA out of memory', $exception->getMessage());
@@ -327,7 +328,7 @@ class EventExtractionTest extends TestCase
 
     public function test_chunk_with_unusable_model_output_is_skipped_and_the_rest_is_stored(): void
     {
-        config(['services.event_worker.url' => 'http://worker:8001', 'services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 0]);
+        config(['services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 0]);
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '0.000', 'end_time' => '4.000', 'text' => 'First chunk']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '12.000', 'end_time' => '15.000', 'text' => 'Second chunk']);
@@ -335,7 +336,7 @@ class EventExtractionTest extends TestCase
             ->push(['error' => 'Event model returned invalid JSON'], 422)
             ->push(['events' => [['type' => 'statement', 'title' => 'Second', 'description' => 'Said something.', 'confidence' => 0.7, 'segment_indexes' => [0]]]])]);
 
-        (new ExtractStreamEventsJob($stream->id))->handle(new EventExtractionWorker());
+        (new ExtractStreamEventsJob($stream->id))->handle(app(EventExtractionWorker::class), app(WorkerPool::class));
 
         $stream->refresh();
         $this->assertSame('completed', $stream->event_extraction_status);
@@ -357,14 +358,14 @@ class EventExtractionTest extends TestCase
         // Like the Analyseren button, every run is queued first.
         $queue = fn () => $stream->newQuery()->whereKey($stream->id)->update(['event_extraction_status' => 'queued']);
         $queue();
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
         $queue();
-        (new ExtractStreamEventsJob($stream->id))->handle($worker);
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
         $this->assertSame(['Second run'], Event::pluck('title')->all());
 
         try {
             $queue();
-            (new ExtractStreamEventsJob($stream->id))->handle($worker);
+            (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
         } catch (\RuntimeException) {
         }
         $this->assertSame('failed', $stream->refresh()->event_extraction_status);
@@ -373,14 +374,13 @@ class EventExtractionTest extends TestCase
 
     public function test_unreachable_worker_and_final_failure_are_reported(): void
     {
-        config(['services.event_worker.url' => 'http://worker:8001']);
         Http::fake(fn () => throw new \Illuminate\Http\Client\ConnectionException('Connection refused'));
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Transcript']);
         $job = new ExtractStreamEventsJob($stream->id);
 
         try {
-            $job->handle(new EventExtractionWorker());
+            $job->handle(app(EventExtractionWorker::class), app(WorkerPool::class));
         } catch (\RuntimeException) {
         }
         $this->assertStringContainsString('niet bereikbaar', (string) $stream->refresh()->event_extraction_error);

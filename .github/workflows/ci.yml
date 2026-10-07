@@ -1,0 +1,98 @@
+# Tests every push and pull request on GitHub's runners. A push to master is then deployed on the Raspberry Pi
+# by a self-hosted runner there (like uitzet-tracker-new): it updates the checkout in /opt/docker/apps and runs
+# scripts/deploy.sh, which builds the image on the Pi. Setup: DEPLOY.md.
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  laravel:
+    name: Laravel tests
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: creatorsmp4_test
+          POSTGRES_USER: creatorsmp4
+          POSTGRES_PASSWORD: creatorsmp4
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U creatorsmp4 -d creatorsmp4_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # phpunit.xml forces the creatorsmp4_test database; these point it at the service container.
+      DB_HOST: 127.0.0.1
+      DB_USERNAME: creatorsmp4
+      DB_PASSWORD: creatorsmp4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo_pgsql, zip
+          coverage: none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: |
+          composer install --no-interaction --prefer-dist --no-progress
+          npm ci --no-audit --no-fund
+      - name: Build the frontend
+        run: npm run build
+      - name: Prepare .env
+        run: cp .env.example .env && php artisan key:generate
+      - name: Run the tests
+        run: php artisan test
+
+  worker:
+    name: Worker tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The tests patch the models, ffmpeg and the GPU; only faster-whisper's import is needed (CPU wheels).
+      - name: Install dependencies
+        run: pip install "faster-whisper>=1.1,<2.0"
+      - name: Run the tests
+        run: python -m unittest discover -s worker -p "test_*.py"
+
+  deploy:
+    name: Deploy on Raspberry Pi
+    needs: [laravel, worker]
+    # Only a push to master (or a manual run on master) reaches the Pi; pull requests never run on it.
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, ARM64]
+    # One deploy at a time, and never cancel one halfway.
+    concurrency:
+      group: creatorsmp4-production-deploy
+      cancel-in-progress: false
+    # deploy.sh waits up to an hour for a running job to finish, and builds the image on the Pi.
+    timeout-minutes: 120
+    steps:
+      - name: Update checkout, back up, migrate and restart
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fetches with this run's token (as in uitzet-tracker-new), so the Pi needs no GitHub credentials.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          cd /opt/docker/apps/creator-smp-analyser
+          DEPLOY_GIT_URL="https://github.com/${GITHUB_REPOSITORY}.git" ./scripts/deploy.sh "$GITHUB_SHA"
