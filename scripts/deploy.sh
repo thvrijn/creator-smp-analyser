@@ -75,6 +75,9 @@ fi
 step "Running the migrations"
 "${compose[@]}" up -d --wait postgres redis
 "${compose[@]}" run --rm --no-deps app php artisan migrate --force
+# Only the admin account (never DatabaseSeeder: that adds development players and streams).
+# It does nothing when the account exists, so a changed password is kept.
+"${compose[@]}" run --rm --no-deps app php artisan db:seed --class=AdminUserSeeder --force
 
 step "Starting the new version"
 if ! "${compose[@]}" up -d --remove-orphans --wait --wait-timeout 180; then
