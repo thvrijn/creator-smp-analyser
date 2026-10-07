@@ -17,7 +17,7 @@ const sections = computed<{ label: string; items: NavItem[] }[]>(() => [
     { label: 'Systeem', items: [
         { label: 'Instellingen', href: '/settings', icon: 'settings' },
         // Only the admin manages accounts.
-        ...(page.props.auth?.user?.is_admin ? [{ label: 'Gebruikers', href: '/users', icon: 'users' }] : []),
+        ...(page.props.auth?.user?.is_admin ? [{ label: 'Gebruikers', href: '/users', icon: 'users' }, { label: 'Activiteit', href: '/activity', icon: 'timeline' }] : []),
     ] },
 ]);
 const isActive = (href: string) => currentPath.value === href || currentPath.value.startsWith(href + '/');

@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import FlashMessages from '../../Components/FlashMessages.vue';
 import AudioPlayer from '../../Components/AudioPlayer.vue';
 import TwitchPlayer from '../../Components/TwitchPlayer.vue';
-import { downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../../composables/streamStatus';
+import { streamDurationLabel, cancelTask, canCancel, isCancelling, downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel , type CancellableTask } from '../../composables/streamStatus';
 import AppLayout from '../../Layouts/AppLayout.vue';
 import { formatDate, type Stream } from '../../types/streams';
 
@@ -13,9 +13,11 @@ type StreamEvent = { id: number; type: string; title: string; description: strin
 type Segment = { id: number; start_time: number; end_time: number; text: string; speaker: number | null };
 type PaginationLink = { url: string | null; label: string; active: boolean };
 type Clip = { id: number; event_id: number | null; title: string; start_seconds: number; end_seconds: number };
+// source: named/unknown by hand, matched by voice (VoiceProfiles, with its similarity), or default (0 = the streamer).
+type Speaker = { speaker: number; name: string; source: 'named' | 'unknown' | 'matched' | 'default'; named: boolean; player_id: number | null; label: string | null; similarity: number | null; seconds: number; segment_count: number };
 type Pagination = { data: Segment[]; current_page: number; last_page: number; per_page: number; total: number; from: number | null; to: number | null };
 
-const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string }>();
+const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speakers: Speaker[]; players: { id: number; name: string }[] }>();
 const stream = reactive<StreamDetail>({ ...props.stream });
 watch(() => props.stream, (value) => { Object.assign(stream, value); }, { deep: true });
 const search = ref(props.search);
@@ -23,8 +25,68 @@ watch(() => props.search, (value) => { search.value = value; });
 
 const streamUrl = '/streams/' + props.stream.id;
 const isHighlighted = (segment: Segment) => props.highlighted_segment_ids.includes(segment.id);
-// Speaker 0 speaks the most in the stream: almost always the streamer. The others are numbered voices, not yet names.
-const speakerLabel = (speaker: number) => speaker === 0 ? stream.player.name : `Spreker ${speaker}`;
+// Without a name given by hand, speaker 0 (speaks the most, almost always the streamer) is the stream's player and the
+// others are numbered voices. Names, merges and per-segment fixes are saved on the server (SpeakerController).
+const speakerLabel = (speaker: number) => props.speakers.find((item) => item.speaker === speaker)?.name ?? (speaker === 0 ? stream.player.name : `Spreker ${speaker}`);
+const speakerClass = (speaker: number) => 'segment-speaker-' + (speaker === 0 ? 'main' : speaker % 6);
+const findSpeaker = (speaker: number) => props.speakers.find((candidate) => candidate.speaker === speaker);
+const isMatched = (speaker: number) => findSpeaker(speaker)?.source === 'matched';
+const similarityLabel = (item: Speaker) => Math.round((item.similarity ?? 0) * 100) + '% gelijk';
+const speakerTitle = (speaker: number) => {
+    const item = findSpeaker(speaker);
+    if (item?.source === 'matched') return 'Herkend aan de stem (' + similarityLabel(item) + '). Klik om te bevestigen of te wijzigen.';
+    if (item?.named) return 'Spreker ' + speaker + ', benoemd door jou. Klik om te wijzigen.';
+    return (speaker === 0 ? 'Spreekt het meest in deze stream, waarschijnlijk de streamer.' : 'Een andere stem in deze stream.') + ' Klik om te wijzigen.';
+};
+
+const editingSpeaker = ref<number | null>(null);
+const speakerForm = reactive({ choice: '' as string, label: '', mergeInto: '' as string });
+const editSpeaker = (item: Speaker) => {
+    editingSpeaker.value = editingSpeaker.value === item.speaker ? null : item.speaker;
+    speakerForm.choice = item.source === 'unknown' ? 'unknown' : item.source !== 'named' ? '' : item.player_id !== null ? String(item.player_id) : 'label';
+    speakerForm.label = item.label ?? '';
+    speakerForm.mergeInto = '';
+};
+const speakerOptions = { preserveScroll: true, preserveState: true, only: ['speakers', 'segments', 'flash', 'errors'] };
+const saveSpeaker = () => {
+    if (editingSpeaker.value === null) return;
+    const body = speakerForm.choice === 'label' ? { label: speakerForm.label } : speakerForm.choice === 'unknown' ? { unknown: true } : { player_id: speakerForm.choice === '' ? null : Number(speakerForm.choice) };
+    router.put(streamUrl + '/speakers/' + editingSpeaker.value, body, { ...speakerOptions, onSuccess: () => { editingSpeaker.value = null; } });
+};
+const editedSpeaker = computed(() => editingSpeaker.value === null ? undefined : findSpeaker(editingSpeaker.value));
+const automaticLabel = computed(() => {
+    const item = editedSpeaker.value;
+    if (!item) return 'Automatisch';
+    if (item.source === 'matched') return 'Automatisch: herkend als ' + item.name + ' (' + similarityLabel(item) + ')';
+    return item.speaker === 0 ? 'Automatisch: de streamer (' + stream.player.name + ')' : 'Automatisch: herkennen aan de stem';
+});
+// A voice match is a guess until confirmed; confirming makes it a known voice of that player.
+const confirmMatch = () => {
+    const item = editedSpeaker.value;
+    if (!item || item.player_id === null) return;
+    router.put(streamUrl + '/speakers/' + item.speaker, { player_id: item.player_id }, { ...speakerOptions, onSuccess: () => { editingSpeaker.value = null; } });
+};
+const mergeSpeaker = () => {
+    if (editingSpeaker.value === null || speakerForm.mergeInto === '') return;
+    const from = speakerLabel(editingSpeaker.value);
+    const into = speakerLabel(Number(speakerForm.mergeInto));
+    if (!window.confirm('Alles van "' + from + '" bij "' + into + '" zetten? Dat kan niet ongedaan worden gemaakt.')) return;
+    router.post(streamUrl + '/speakers/' + editingSpeaker.value + '/merge', { into: Number(speakerForm.mergeInto) }, { ...speakerOptions, onSuccess: () => { editingSpeaker.value = null; } });
+};
+
+// One segment to another speaker: a small menu on its speaker label.
+const editingSegmentId = ref<number | null>(null);
+const openSegmentSpeaker = async (segment: Segment) => {
+    editingSegmentId.value = segment.id;
+    await nextTick();
+    document.querySelector<HTMLSelectElement>('.segment-speaker-select')?.focus();
+};
+const moveSegment = (segment: Segment, value: string) => {
+    editingSegmentId.value = null;
+    const speaker = value === 'none' ? null : value === 'new' ? 'new' : Number(value);
+    if (speaker === segment.speaker) return;
+    router.put('/segments/' + segment.id + '/speaker', { speaker }, speakerOptions);
+};
 const selectedEvent = computed(() => props.events.find((event) => event.id === props.selected_event_id));
 
 // The tab lives in the URL (?tab=), so links and the back button work. Without one, a selected
@@ -137,6 +199,13 @@ const poll = async () => {
 };
 onMounted(() => { void scrollToHighlight(); pollTimer = window.setInterval(() => { void poll(); }, 2000); });
 onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTimer); });
+// Queued, waiting or running jobs of this stream that can be cancelled (or are being cancelled).
+const cancellable = computed(() => ([
+    { task: 'video_download', label: 'Audio ophalen' },
+    { task: 'transcription', label: 'Transcriptie' },
+    { task: 'event_extraction', label: 'Analyse' },
+] as { task: CancellableTask; label: string }[]).filter((item) => canCancel(stream, item.task) || isCancelling(stream, item.task)));
+const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 </script>
 
 <template>
@@ -147,7 +216,7 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
             <div class="stream-hero-text">
                 <p class="section-kicker">Stream</p>
                 <h2 class="page-section-title">{{ stream.title }}</h2>
-                <p class="muted-copy"><Link class="inline-link" :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> · {{ formatDate(stream.started_at) }} · {{ formatSeconds(stream.duration_seconds) }} · {{ stream.segment_count }} segmenten · {{ events.length }} events</p>
+                <p class="muted-copy"><Link class="inline-link" :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> · {{ formatDate(stream.started_at) }}<template v-if="stream.ended_at"> – {{ formatTime(stream.ended_at) }}</template><template v-if="streamDurationLabel(stream)"> · <strong class="stream-length-inline">{{ streamDurationLabel(stream) }}</strong><template v-if="stream.status === 'Live'"> live</template></template><template v-if="stream.duration_seconds"> · {{ formatSeconds(stream.duration_seconds) }} getranscribeerd</template> · {{ stream.segment_count }} segmenten · {{ events.length }} events</p>
                 <div class="stream-hero-statuses">
                     <span v-if="stream.twitch_video_id" class="status-pair"><span class="transcription-stage">Audio</span><span class="transcription-badge" :class="'transcription-' + audioState.badge">{{ audioState.label }}</span></span>
                     <span class="status-pair"><span class="transcription-stage">Transcript</span><span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ transcriptionLabel(stream.transcription_status) }}</span><span v-if="isTranscriptionActive(stream)" class="transcription-stage">{{ stageLabel(stream.transcription_stage) }} · {{ Math.round(stream.transcription_progress) }}%</span></span>
@@ -156,6 +225,12 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                 <div v-if="!stream.video_path && stream.video_download_status === 'processing' && !stream.video_download_stalled" class="progress-track"><span :style="{ width: stream.video_download_progress + '%' }" /></div>
                 <div v-if="isEventExtractionActive(stream)" class="progress-track" :class="{ 'progress-indeterminate': stream.event_extraction_progress === null }"><span :style="stream.event_extraction_progress === null ? {} : { width: stream.event_extraction_progress + '%' }" /></div>
                 <p v-if="stream.worker_name" class="transcription-stage">Draait op worker {{ stream.worker_name }}</p>
+                <div v-if="cancellable.length > 0" class="stream-cancel-row">
+                    <template v-for="item in cancellable" :key="item.task">
+                        <span v-if="isCancelling(stream, item.task)" class="transcription-stage">{{ item.label }} wordt geannuleerd…</span>
+                        <button v-else class="cancel-link" type="button" @click="cancelTask(stream, item.task)">✕ {{ item.label }} annuleren</button>
+                    </template>
+                </div>
                 <p v-if="stream.transcription_stalled || stream.event_extraction_stalled || stream.video_download_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.video_download_error && !stream.video_path" class="stream-error">{{ stream.video_download_error }}</p>
                 <p v-if="stream.transcription_error" class="stream-error">{{ stream.transcription_error }}</p>
@@ -233,10 +308,40 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                 <input id="transcript-search" v-model="search" type="search" placeholder="Zoek in transcript…" />
                 <button class="secondary-button" type="submit">Zoeken</button>
             </form>
+            <div v-if="speakers.length" class="speaker-bar">
+                <span class="transcription-stage">Sprekers</span>
+                <button v-for="item in speakers" :key="item.speaker" class="speaker-chip" :class="[speakerClass(item.speaker), { 'speaker-chip-active': editingSpeaker === item.speaker, 'speaker-matched': item.source === 'matched' }]" type="button" :title="(item.source === 'matched' ? 'Herkend aan de stem (' + similarityLabel(item) + '). ' : '') + 'Spreker ' + item.speaker + ' · ' + item.segment_count + ' zinnen. Klik om te benoemen of samen te voegen.'" @click="editSpeaker(item)">
+                    {{ item.name }}<template v-if="item.source === 'matched'">?</template><span>{{ formatSeconds(item.seconds) }}</span>
+                </button>
+            </div>
+            <form v-if="editingSpeaker !== null" class="speaker-editor" @submit.prevent="saveSpeaker">
+                <div class="form-field"><label for="speaker-name">Wie is spreker {{ editingSpeaker }}?</label>
+                    <select id="speaker-name" v-model="speakerForm.choice">
+                        <option value="">{{ automaticLabel }}</option>
+                        <option value="unknown">Onbekend (niet herkennen)</option>
+                        <option value="label">Andere naam…</option>
+                        <option v-for="player in players" :key="player.id" :value="String(player.id)">{{ player.name }}</option>
+                    </select>
+                </div>
+                <div v-if="speakerForm.choice === 'label'" class="form-field"><label for="speaker-label">Naam</label><input id="speaker-label" v-model="speakerForm.label" type="text" maxlength="60" placeholder="bijv. een gast of de chat-TTS" required /></div>
+                <button class="primary-button" type="submit">Opslaan</button>
+                <button v-if="editedSpeaker?.source === 'matched'" class="secondary-button" type="button" @click="confirmMatch">✓ Klopt, dit is {{ editedSpeaker.name }}</button>
+                <div class="speaker-merge">
+                    <div class="form-field"><label for="speaker-merge">Is dezelfde persoon als</label>
+                        <select id="speaker-merge" v-model="speakerForm.mergeInto"><option value="">Kies een spreker…</option><option v-for="item in speakers.filter((candidate) => candidate.speaker !== editingSpeaker)" :key="item.speaker" :value="String(item.speaker)">{{ item.name }}</option></select>
+                    </div>
+                    <button class="secondary-button" type="button" :disabled="speakerForm.mergeInto === ''" @click="mergeSpeaker">Samenvoegen</button>
+                </div>
+                <button class="modal-close" type="button" aria-label="Sluiten" @click="editingSpeaker = null">×</button>
+            </form>
             <div v-if="segments.data.length" ref="transcriptList" class="transcript-list transcript-list-scroll">
                 <article v-for="segment in segments.data" :key="segment.id" class="transcript-segment" :class="{ 'segment-highlight': isHighlighted(segment), 'segment-playing': segment.id === playingSegmentId }">
                     <div class="segment-time">{{ formatSeconds(segment.start_time) }}</div>
-                    <div class="segment-copy"><div v-if="segment.speaker !== null" class="segment-speaker" :class="'segment-speaker-' + (segment.speaker === 0 ? 'main' : segment.speaker % 6)" :title="segment.speaker === 0 ? 'Spreekt het meest in deze stream, waarschijnlijk de streamer' : 'Een andere stem in deze stream'">{{ speakerLabel(segment.speaker) }}</div><p>{{ segment.text }}</p><span>{{ formatSeconds(segment.end_time) }}</span></div>
+                    <div class="segment-copy"><select v-if="editingSegmentId === segment.id" class="segment-speaker-select" :value="segment.speaker === null ? 'none' : String(segment.speaker)" aria-label="Spreker van deze zin" @change="moveSegment(segment, ($event.target as HTMLSelectElement).value)" @blur="editingSegmentId = null">
+                        <option v-for="item in speakers" :key="item.speaker" :value="String(item.speaker)">{{ item.name }}</option>
+                        <option value="new">Nieuwe spreker</option>
+                        <option value="none">Geen spreker</option>
+                    </select><button v-else-if="segment.speaker !== null" class="segment-speaker" :class="[speakerClass(segment.speaker), { 'speaker-matched': isMatched(segment.speaker) }]" type="button" :title="speakerTitle(segment.speaker)" @click="openSegmentSpeaker(segment)">{{ speakerLabel(segment.speaker) }}<template v-if="isMatched(segment.speaker)">?</template></button><button v-else-if="speakers.length" class="segment-speaker segment-speaker-none" type="button" title="Geen spreker. Klik om er een te kiezen." @click="openSegmentSpeaker(segment)">?</button><p>{{ segment.text }}</p><span>{{ formatSeconds(segment.end_time) }}</span></div>
                     <div class="segment-actions">
                         <button v-if="stream.video_path" class="segment-clip" type="button" title="Afspelen vanaf hier" @click="playFrom(segment.start_time)">▶</button>
                         <button class="segment-clip" type="button" title="Clip vanaf hier (1 minuut)" @click="clipFromSegment(segment)">✂ Clip</button>

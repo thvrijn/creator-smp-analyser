@@ -63,7 +63,7 @@ class VodDownloadTest extends TestCase
             ['start_time' => 420, 'end_time' => 19283, 'title' => 'CreatorSMP'],
         ]);
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         // From the CreatorSMP chapter (420 s) to the server closing at midnight (22:00 UTC, 18801 s); the file stays whole.
         Process::assertRan(fn (PendingProcess $process) => $process->command[0] === 'yt-dlp' && in_array('ba/worst', $process->command, true));
@@ -88,7 +88,7 @@ class VodDownloadTest extends TestCase
             ['start_time' => 10000, 'end_time' => 19283, 'title' => 'CreatorSMP'],
         ]);
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         $this->assertSame([[0, 793], [10000, 18801]], $stream->fresh()->transcription_ranges);
     }
@@ -98,7 +98,7 @@ class VodDownloadTest extends TestCase
         $stream = $this->vod();
         $this->fakeProcesses(null);
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         $this->assertSame([[0, 18801]], $stream->fresh()->transcription_ranges);
     }
@@ -109,7 +109,7 @@ class VodDownloadTest extends TestCase
         $stream->update(['ended_at' => '2026-10-04 21:00:00']);
         $this->fakeProcesses([['start_time' => 0, 'end_time' => 15201, 'title' => 'CreatorSMP']]);
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         $this->assertNull($stream->fresh()->transcription_ranges);
     }
@@ -119,7 +119,7 @@ class VodDownloadTest extends TestCase
         $stream = $this->vod();
         $this->fakeProcesses([['start_time' => 0, 'end_time' => 19283, 'title' => 'Just Chatting']]);
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         $stream->refresh();
         $this->assertSame('failed', $stream->video_download_status);
@@ -133,7 +133,7 @@ class VodDownloadTest extends TestCase
         $stream = $this->vod();
         $this->fakeProcesses(ytDlpFails: true);
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         $stream->refresh();
         $this->assertSame('failed', $stream->video_download_status);
@@ -157,7 +157,7 @@ class VodDownloadTest extends TestCase
         $stream = $this->vod();
         Process::fake();
 
-        DownloadVodJob::dispatchSync($stream->id);
+        DownloadVodJob::dispatchSync($this->markQueued($stream, 'video_download')->id);
 
         $this->assertStringStartsWith('Niet genoeg schijfruimte', $stream->fresh()->video_download_error);
         Process::assertNothingRan();

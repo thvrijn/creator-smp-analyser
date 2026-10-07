@@ -9,6 +9,8 @@ use App\Jobs\TranscribeStreamJob;
 use App\Models\Event;
 use App\Models\Player;
 use App\Models\Stream;
+use App\Services\StreamJobCanceller;
+use App\Services\StreamSpeakers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -146,6 +148,8 @@ class StreamController extends Controller
             'transcription_stalled' => $stream->isStalled('transcription_status'),
             'event_extraction_stalled' => $stream->isStalled('event_extraction_status'),
             'worker_name' => $stream->activeWorker?->name,
+            'transcription_cancelling' => $stream->transcription_cancel_requested_at !== null,
+            'event_extraction_cancelling' => $stream->event_extraction_cancel_requested_at !== null,
         ]);
     }
 
@@ -178,6 +182,14 @@ class StreamController extends Controller
         }
 
         return $this->backToStreams()->with('success', 'Event-extractie toegevoegd aan de wachtrij.');
+    }
+
+    /** Cancels the stream's transcription, analysis or audio download (task), queued or running. */
+    public function cancel(Stream $stream, string $task, StreamJobCanceller $canceller): RedirectResponse
+    {
+        [$ok, $message] = $canceller->cancel($stream, $task);
+
+        return $this->backToStreams()->with($ok ? 'success' : 'error', $message);
     }
 
     private const SEGMENTS_PER_PAGE = 50;
@@ -227,6 +239,9 @@ class StreamController extends Controller
                 'duration_seconds' => $totalDuration === null ? null : (float) $totalDuration,
                 'segment_count' => $stream->transcript_segments_count,
             ],
+            'speakers' => app(StreamSpeakers::class)->list($stream),
+            // For naming a speaker after a player.
+            'players' => Player::query()->orderByRaw('lower(name)')->get(['id', 'name']),
             'events' => $events->map(fn (Event $event) => [
                 'id' => $event->id,
                 'type' => $event->type,

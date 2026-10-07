@@ -26,11 +26,24 @@ export const extractButtonLabel = (stream: Stream) => stream.event_extraction_st
 export const transcribe = (stream: Stream) => { router.post('/streams/' + stream.id + '/transcribe', {}, { preserveScroll: true }); };
 // A new transcript replaces the old one; the events stay but lose their link to the transcript.
 export const retranscribe = (stream: Stream) => {
-    if (window.confirm(`Transcript van "${stream.title}" opnieuw maken?\n\nHet huidige transcript wordt vervangen. De events blijven staan, maar zijn daarna niet meer aan het transcript gekoppeld: analyseer de stream daarna opnieuw.`)) transcribe(stream);
+    if (window.confirm(`Transcript van "${stream.title}" opnieuw maken?\n\nHet huidige transcript wordt vervangen. De events blijven staan, maar zijn daarna niet meer aan het transcript gekoppeld: analyseer de stream daarna opnieuw.\n\nSprekers worden opnieuw herkend: namen en correcties die je aan sprekers gaf, vervallen.`)) transcribe(stream);
 };
 export const isDownloadActive = (stream: Stream) => (stream.video_download_status === 'queued' || stream.video_download_status === 'processing') && !stream.video_download_stalled;
 export const downloadAudio = (stream: Stream) => { router.post('/streams/' + stream.id + '/download-audio', {}, { preserveScroll: true }); };
 export const downloadLabel = (stream: Stream) => stream.video_download_status === 'queued' ? 'In wachtrij' : stream.video_download_progress >= 99 ? 'Bijna klaar…' : 'Downloaden ' + stream.video_download_progress + '%';
+export type CancellableTask = 'transcription' | 'event_extraction' | 'video_download';
+const taskNames: Record<CancellableTask, string> = { transcription: 'de transcriptie', event_extraction: 'de analyse', video_download: 'het ophalen van de audio' };
+const taskStatus = (stream: Stream, task: CancellableTask) => task === 'transcription' ? stream.transcription_status : task === 'event_extraction' ? stream.event_extraction_status : stream.video_download_status;
+export const isCancelling = (stream: Stream, task: CancellableTask) => stream[`${task}_cancelling`];
+/** Queued, waiting or running (also when it seems stalled: cancelling that resets it at once). */
+export const canCancel = (stream: Stream, task: CancellableTask) => ['queued', 'waiting', 'processing'].includes(taskStatus(stream, task)) && !isCancelling(stream, task);
+export const cancelTask = (stream: Stream, task: CancellableTask) => {
+    const running = taskStatus(stream, task) === 'processing';
+    const message = running
+        ? 'Weet je zeker dat je ' + taskNames[task] + ' wilt stoppen? Wat al gedaan is gaat verloren; een vorig resultaat blijft staan.'
+        : 'Weet je zeker dat je ' + taskNames[task] + ' uit de wachtrij wilt halen?';
+    if (window.confirm(message)) router.post('/streams/' + stream.id + '/cancel/' + task, {}, { preserveScroll: true });
+};
 export const extractEvents = (stream: Stream) => { router.post('/streams/' + stream.id + '/extract-events', {}, { preserveScroll: true }); };
 
 // "218 MB" / "1,2 GB", Dutch number format.
@@ -41,6 +54,14 @@ export const formatBytes = (bytes: number | null) => {
     let unit = 0;
     while (value >= 1000 && unit < units.length - 1) { value /= 1000; unit++; }
     return value.toLocaleString('nl-NL', { maximumFractionDigits: value < 10 && unit > 0 ? 1 : 0 }) + ' ' + units[unit];
+};
+/** How long the stream lasted (or has been live so far), e.g. "6u 21m"; null without an end for a finished stream. */
+export const streamDurationLabel = (stream: Pick<Stream, 'started_at' | 'ended_at' | 'status'>) => {
+    const end = stream.ended_at ? new Date(stream.ended_at) : stream.status === 'Live' ? new Date() : null;
+    if (!end) return null;
+    const minutes = Math.max(0, Math.round((end.getTime() - new Date(stream.started_at).getTime()) / 60000));
+    const hours = Math.floor(minutes / 60);
+    return hours > 0 ? hours + 'u ' + String(minutes % 60).padStart(2, '0') + 'm' : minutes + 'm';
 };
 export const formatSeconds = (seconds: number | null) => {
     if (seconds === null || !Number.isFinite(seconds)) return '—';
@@ -54,7 +75,7 @@ export const refreshStatus = async (stream: Stream): Promise<void> => {
         const response = await fetch('/streams/' + stream.id + '/transcription-status', { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
         if (!response.ok) return;
         const status = await response.json() as TranscriptionStatus;
-        Object.assign(stream, { transcription_status: status.status, transcription_stage: status.stage, transcription_progress: status.progress, transcription_processed_seconds: status.processed_seconds, transcription_duration_seconds: status.duration_seconds, transcription_segment_count: status.segment_count, transcription_started_at: status.started_at, transcription_eta_seconds: status.eta_seconds, transcription_error: status.error, event_extraction_status: status.event_extraction_status, event_extraction_error: status.event_extraction_error, event_extraction_progress: status.event_extraction_progress, event_extraction_chunks_done: status.event_extraction_chunks_done, event_extraction_chunks_total: status.event_extraction_chunks_total, event_extraction_eta_seconds: status.event_extraction_eta_seconds, transcription_stalled: status.transcription_stalled, event_extraction_stalled: status.event_extraction_stalled, worker_name: status.worker_name });
+        Object.assign(stream, { transcription_status: status.status, transcription_stage: status.stage, transcription_progress: status.progress, transcription_processed_seconds: status.processed_seconds, transcription_duration_seconds: status.duration_seconds, transcription_segment_count: status.segment_count, transcription_started_at: status.started_at, transcription_eta_seconds: status.eta_seconds, transcription_error: status.error, event_extraction_status: status.event_extraction_status, event_extraction_error: status.event_extraction_error, event_extraction_progress: status.event_extraction_progress, event_extraction_chunks_done: status.event_extraction_chunks_done, event_extraction_chunks_total: status.event_extraction_chunks_total, event_extraction_eta_seconds: status.event_extraction_eta_seconds, transcription_stalled: status.transcription_stalled, event_extraction_stalled: status.event_extraction_stalled, worker_name: status.worker_name, transcription_cancelling: status.transcription_cancelling, event_extraction_cancelling: status.event_extraction_cancelling });
         if (status.status === 'completed') stream.has_transcript = stream.has_transcript || status.segment_count > 0;
     } catch { /* polling can retry on the next interval */ }
 };

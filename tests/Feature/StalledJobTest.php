@@ -75,7 +75,8 @@ class StalledJobTest extends TestCase
         $stream->transcriptSegments()->create(['start_time' => 1, 'end_time' => 2, 'text' => 'Hallo']);
         Http::fake();
 
-        (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+
+        (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         Http::assertNothingSent();
         $this->assertSame(1, $stream->transcriptSegments()->count());

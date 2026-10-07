@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Link, router } from '@inertiajs/vue3';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../composables/streamStatus';
+import { streamDurationLabel, cancelTask, canCancel, isCancelling, downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../composables/streamStatus';
 import { type Stream } from '../types/streams';
 import PlayerAvatar from './PlayerAvatar.vue';
 
@@ -50,12 +50,15 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearInterval(do
                 <div>{{ dayLabel(stream.started_at) }}</div>
                 <div v-if="stream.status === 'Live'" class="stream-time"><span class="status-badge status-live"><span />Live</span> sinds {{ timeLabel(stream.started_at) }}</div>
                 <div v-else class="stream-time">{{ timeLabel(stream.started_at) }}<template v-if="stream.ended_at"> – {{ timeLabel(stream.ended_at) }}</template></div>
+                <div v-if="streamDurationLabel(stream)" class="stream-length" :title="stream.status === 'Live' ? 'Zo lang is de stream nu bezig' : 'Totale duur van de stream'">{{ streamDurationLabel(stream) }}<template v-if="stream.status === 'Live'"> bezig</template></div>
             </td>
             <td>
                 <template v-if="stream.video_path"><span class="video-indicator video-present">{{ stream.video_mime_type?.startsWith('audio/') ? '✓ Audio' : '✓ Video' }}<template v-if="stream.video_file_size !== null"> · {{ formatBytes(stream.video_file_size) }}</template></span><span v-if="stream.transcription_ranges" class="transcription-stage" title="Alleen het deel in de categorie CreatorSMP tussen 14:00 en 00:00 wordt getranscribeerd.">SMP-deel {{ formatSeconds(smpSeconds(stream)) }}</span><span v-else-if="stream.video_offset_seconds > 0" class="transcription-stage">vanaf {{ videoStartTime(stream) }}</span></template>
                 <template v-else-if="isDownloadActive(stream)">
                     <span class="transcription-badge transcription-processing">{{ downloadLabel(stream) }}</span>
                     <div v-if="stream.video_download_status === 'processing'" class="progress-track progress-track-small"><span :style="{ width: stream.video_download_progress + '%' }" /></div>
+                    <button v-if="canCancel(stream, 'video_download')" class="cancel-link" type="button" @click="cancelTask(stream, 'video_download')">✕ Annuleren</button>
+                    <span v-else-if="isCancelling(stream, 'video_download')" class="transcription-stage">Wordt geannuleerd…</span>
                 </template>
                 <span v-else-if="stream.twitch_video_id && !stream.ended_at" class="transcription-stage" title="Sync de VOD's opnieuw als de stream voorbij is.">Nog live · audio na afloop</span>
                 <button v-else-if="stream.twitch_video_id" class="secondary-button" type="button" @click="downloadAudio(stream)">Audio ophalen</button>
@@ -70,6 +73,8 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearInterval(do
                 <div v-if="isTranscriptionActive(stream)" class="progress-track"><span :style="{ width: Math.max(0, Math.min(100, stream.transcription_progress)) + '%' }" /></div>
                 <div v-if="isTranscriptionActive(stream) || stream.transcription_status === 'completed'" class="transcription-meta"><span>{{ Math.max(0, Math.min(100, stream.transcription_progress)) }}%</span><span>{{ formatSeconds(stream.transcription_processed_seconds) }} / {{ formatSeconds(stream.transcription_duration_seconds) }}</span><span v-if="displayEta(stream) !== null && stream.transcription_status === 'processing'">nog ~ {{ formatSeconds(displayEta(stream)) }}</span><span>{{ stream.transcription_segment_count }} segmenten</span></div>
                 <span v-if="stream.worker_name" class="transcription-stage">Op worker {{ stream.worker_name }}</span>
+                <button v-if="canCancel(stream, 'transcription')" class="cancel-link" type="button" @click="cancelTask(stream, 'transcription')">✕ Annuleren</button>
+                <span v-else-if="isCancelling(stream, 'transcription')" class="transcription-stage">Wordt geannuleerd…</span>
                 <p v-if="stream.transcription_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.transcription_error" class="stream-error">{{ stream.transcription_error }}</p>
                 <span v-if="stream.event_extraction_status !== 'pending'" class="event-extraction-status"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ eventExtractionLabel(stream.event_extraction_status) }}</span></span>
@@ -77,6 +82,8 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearInterval(do
                     <div class="progress-track" :class="{ 'progress-indeterminate': stream.event_extraction_progress === null }"><span :style="stream.event_extraction_progress === null ? {} : { width: stream.event_extraction_progress + '%' }" /></div>
                     <div v-if="stream.event_extraction_progress !== null" class="transcription-meta"><span>{{ stream.event_extraction_progress }}%</span><span>{{ eventProgressDetails(stream) }}</span></div>
                 </template>
+                <button v-if="canCancel(stream, 'event_extraction')" class="cancel-link" type="button" @click="cancelTask(stream, 'event_extraction')">✕ Annuleren</button>
+                <span v-else-if="isCancelling(stream, 'event_extraction')" class="transcription-stage">Wordt geannuleerd…</span>
                 <p v-if="stream.event_extraction_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.event_extraction_error" class="stream-error">{{ stream.event_extraction_error }}</p>
             </div></td>

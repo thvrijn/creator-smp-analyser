@@ -2,6 +2,7 @@
 
 namespace Tests;
 
+use App\Models\Stream;
 use App\Models\User;
 use App\Models\Worker;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
@@ -41,5 +42,13 @@ abstract class TestCase extends BaseTestCase
             'last_seen_at' => now(),
             ...$attributes,
         ]);
+    }
+
+    /** Like the buttons do before dispatching: a job only starts from a queued status (Stream::STARTABLE_STATUSES). */
+    protected function markQueued(Stream $stream, string $task): Stream
+    {
+        Stream::query()->whereKey($stream->id)->update(["{$task}_status" => 'queued']);
+
+        return $stream;
     }
 }

@@ -121,19 +121,19 @@ class WorkerRegistryTest extends TestCase
         $transcriber = Mockery::mock(TranscriptionWorker::class);
         $transcriber->shouldNotReceive('transcribe');
 
-        (new TranscribeStreamJob($stream->id))->handle($transcriber, app(WorkerPool::class));
+        (new TranscribeStreamJob($stream->id))->handle($transcriber, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
         $this->assertSame(['waiting', 'waiting_for_worker'], [$stream->refresh()->transcription_status, $stream->transcription_stage]);
 
         $this->travel(11)->minutes();
         $this->assertTrue($stream->isStalled('transcription_status'));
-        (new TranscribeStreamJob($stream->id))->handle($transcriber, app(WorkerPool::class));
+        (new TranscribeStreamJob($stream->id))->handle($transcriber, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
         $this->assertFalse($stream->refresh()->isStalled('transcription_status'));
         $this->assertSame('waiting', $stream->transcription_status);
 
         $extractor = Mockery::mock(EventExtractionWorker::class);
         $extractor->shouldNotReceive('extract');
         $stream->update(['transcription_status' => 'completed', 'event_extraction_status' => 'queued']);
-        (new ExtractStreamEventsJob($stream->id))->handle($extractor, app(WorkerPool::class));
+        (new ExtractStreamEventsJob($stream->id))->handle($extractor, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
         $this->assertSame('waiting', $stream->refresh()->event_extraction_status);
     }
 
@@ -145,7 +145,7 @@ class WorkerRegistryTest extends TestCase
         $queueJob->shouldReceive('release')->once()->with(30);
         $job->setJob($queueJob);
 
-        $job->handle(app(TranscriptionWorker::class), app(WorkerPool::class));
+        $job->handle(app(TranscriptionWorker::class), app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $this->assertGreaterThan(now()->addDays(6), $job->retryUntil());
     }
@@ -169,7 +169,7 @@ class WorkerRegistryTest extends TestCase
         $worker = $this->onlineWorker(['url' => 'http://pc:8001/']);
         Http::fake(['pc:8001/transcribe' => Http::response(json_encode(['type' => 'segment', 'start' => 1, 'end' => 2, 'text' => 'Hallo'])."\n")]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(WorkerPool::class));
+        (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $this->assertSame('completed', $stream->refresh()->transcription_status);
         $this->assertNull($worker->refresh()->current_task);
@@ -188,7 +188,7 @@ class WorkerRegistryTest extends TestCase
         Http::fake(fn () => throw new \Illuminate\Http\Client\ConnectionException('Connection refused'));
 
         try {
-            (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(WorkerPool::class));
+            (new TranscribeStreamJob($stream->id))->handle(app(TranscriptionWorker::class), app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
             $this->fail('The job should fail so the queue retries it.');
         } catch (\RuntimeException $exception) {
             $this->assertStringContainsString('test-worker is niet bereikbaar', $exception->getMessage());

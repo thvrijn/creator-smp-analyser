@@ -28,7 +28,7 @@ trait WaitsForWorker
 
         $waiting = DB::transaction(function () use ($stream, $statusColumn, $waitingAttributes): bool {
             $locked = Stream::query()->whereKey($stream->id)->lockForUpdate()->first();
-            if ($locked === null || in_array($locked->{$statusColumn}, ['processing', 'completed'], true)) {
+            if ($locked === null || ! in_array($locked->{$statusColumn}, Stream::STARTABLE_STATUSES, true)) {
                 return false;
             }
             $locked->forceFill([$statusColumn => 'waiting', ...$waitingAttributes]);

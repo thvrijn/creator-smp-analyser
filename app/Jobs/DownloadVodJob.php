@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Stream;
 use App\Services\ServerHours;
+use App\Services\StreamJobCanceller;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -31,7 +32,7 @@ class DownloadVodJob implements ShouldQueue
 
     public function __construct(public readonly int $streamId) {}
 
-    public function handle(): void
+    public function handle(StreamJobCanceller $canceller): void
     {
         $stream = Stream::find($this->streamId);
         if ($stream === null || ! $this->markAsProcessing($stream)) {
@@ -59,7 +60,7 @@ class DownloadVodJob implements ShouldQueue
         }
 
         $base = Storage::path($directory).'/'.$this->baseName($stream);
-        $result = Process::timeout($this->timeout - 300)->run([
+        $process = Process::timeout($this->timeout - 300)->start([
             'yt-dlp', '--no-playlist', '--no-part', '--concurrent-fragments', '8',
             // One line per downloaded fragment, read by trackProgress().
             '--progress', '--newline', '--progress-template', 'download:progress %(progress.fragment_index)s/%(progress.fragment_count)s',
@@ -70,6 +71,24 @@ class DownloadVodJob implements ShouldQueue
             '--print', 'after_move:%(vcodec)s %(filepath)s',
             'https://www.twitch.tv/videos/'.$stream->twitch_video_id,
         ], $this->trackProgress($stream));
+        // Polling also hands yt-dlp's output to trackProgress. Cancelled in the UI: stop yt-dlp and clean up.
+        $cancelCheckedAt = microtime(true);
+        while ($process->running()) {
+            if (microtime(true) - $cancelCheckedAt >= 2) {
+                $cancelCheckedAt = microtime(true);
+                try {
+                    $canceller->throwIfRequested($stream, 'video_download');
+                } catch (JobCancelled) {
+                    $process->signal(15); // SIGTERM
+                    $process->wait();
+                    $canceller->restore($stream, 'video_download');
+
+                    return;
+                }
+            }
+            usleep(200_000);
+        }
+        $result = $process->wait();
         $lines = array_values(array_filter(explode("\n", trim($result->output())), fn (string $line) => self::progressPercent($line) === null));
         [$videoCodec, $full] = explode(' ', (string) array_pop($lines), 2) + ['', ''];
         if ($result->failed() || $full === '' || ! is_file($full)) {
@@ -80,7 +99,7 @@ class DownloadVodJob implements ShouldQueue
 
         $ranges = $this->creatorSmpRanges($stream, json_decode((string) array_pop($lines), true));
         if ($ranges === []) {
-            $this->deletePartialFiles($stream);
+            self::deletePartialFiles($stream);
             $this->markAsFailed($stream, sprintf('Deze VOD heeft geen deel in de categorie %s tussen %02d:00 en %02d:00.', config('services.twitch.category'), config('services.twitch.server_opens_hour'), config('services.twitch.server_closes_hour') % 24));
 
             return;
@@ -108,7 +127,7 @@ class DownloadVodJob implements ShouldQueue
     {
         $stream = Stream::find($this->streamId);
         if ($stream !== null) {
-            $this->deletePartialFiles($stream);
+            self::deletePartialFiles($stream);
             $this->markAsFailed($stream, 'Downloaden is mislukt: '.$exception->getMessage());
         }
     }
@@ -188,7 +207,7 @@ class DownloadVodJob implements ShouldQueue
 
     private function failWithOutput(Stream $stream, string $errorOutput): void
     {
-        $this->deletePartialFiles($stream);
+        self::deletePartialFiles($stream);
         $messages = array_filter(explode("\n", trim($errorOutput)), fn (string $line) => self::progressPercent($line) === null);
         $error = trim((string) end($messages));
         $this->markAsFailed($stream, 'Downloaden is mislukt'.($error !== '' ? ': '.$error : '.'));
@@ -196,13 +215,17 @@ class DownloadVodJob implements ShouldQueue
 
     private function baseName(Stream $stream): string
     {
+        // deletePartialFiles() matches these names too.
         return 'twitch-'.$stream->twitch_video_id;
     }
 
-    // A failed or killed download leaves half files behind.
-    private function deletePartialFiles(Stream $stream): void
+    // A failed, killed or cancelled download leaves half files behind.
+    public static function deletePartialFiles(Stream $stream): void
     {
-        foreach (glob(Storage::path("streams/{$stream->id}/video").'/'.$this->baseName($stream).'.*') ?: [] as $file) {
+        if ($stream->twitch_video_id === null) {
+            return;
+        }
+        foreach (glob(Storage::path("streams/{$stream->id}/video").'/twitch-'.$stream->twitch_video_id.'.*') ?: [] as $file) {
             @unlink($file);
         }
     }
@@ -211,11 +234,12 @@ class DownloadVodJob implements ShouldQueue
     {
         return DB::transaction(function () use ($stream): bool {
             $locked = Stream::query()->whereKey($stream->id)->lockForUpdate()->first();
-            if ($locked === null || $locked->video_download_status === 'processing' || $locked->video_path !== null) {
+            // Only a queued download: pending again means it was cancelled before it started.
+            if ($locked === null || $locked->video_download_status !== 'queued' || $locked->video_path !== null) {
                 return false;
             }
 
-            $locked->forceFill(['video_download_status' => 'processing', 'video_download_progress' => 0, 'video_download_error' => null])->save();
+            $locked->forceFill(['video_download_status' => 'processing', 'video_download_progress' => 0, 'video_download_error' => null, 'video_download_cancel_requested_at' => null])->save();
 
             return true;
         });

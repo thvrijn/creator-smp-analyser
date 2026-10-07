@@ -5,10 +5,12 @@ namespace App\Jobs;
 use App\Jobs\Concerns\WaitsForWorker;
 use App\Models\Event;
 use App\Models\Stream;
+use App\Models\TranscriptSegment;
 use App\Models\Worker;
 use App\Services\EventExtractionWorker;
-use App\Services\WorkerPool;
 use App\Services\InvalidModelOutputException;
+use App\Services\StreamJobCanceller;
+use App\Services\WorkerPool;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -24,21 +26,21 @@ class ExtractStreamEventsJob implements ShouldQueue
 
     // Real errors; waiting for a free worker does not count (see WaitsForWorker).
     public int $maxExceptions = 2;
+
     public int $timeout = 1800;
 
-    public function __construct(public readonly int $streamId)
-    {
-    }
+    public function __construct(public readonly int $streamId) {}
 
     public function backoff(): array
     {
         return [30];
     }
 
-    public function handle(EventExtractionWorker $extractor, WorkerPool $pool): void
+    public function handle(EventExtractionWorker $extractor, WorkerPool $pool, StreamJobCanceller $canceller): void
     {
         $stream = Stream::find($this->streamId);
-        if ($stream === null || in_array($stream->event_extraction_status, ['processing', 'completed'], true)) {
+        // Not startable: running elsewhere, done, or cancelled while queued.
+        if ($stream === null || ! in_array($stream->event_extraction_status, Stream::STARTABLE_STATUSES, true)) {
             return;
         }
         // One worker for all chunks, so its model stays loaded.
@@ -48,13 +50,13 @@ class ExtractStreamEventsJob implements ShouldQueue
         }
 
         try {
-            $this->extract($extractor, $worker, $stream->load('transcriptSegments'));
+            $this->extract($extractor, $canceller, $worker, $stream->load('transcriptSegments'));
         } finally {
             $pool->release($worker);
         }
     }
 
-    private function extract(EventExtractionWorker $extractor, Worker $worker, Stream $stream): void
+    private function extract(EventExtractionWorker $extractor, StreamJobCanceller $canceller, Worker $worker, Stream $stream): void
     {
         if (! $this->markAsProcessing($stream)) {
             return;
@@ -73,6 +75,8 @@ class ExtractStreamEventsJob implements ShouldQueue
             $chunks = $this->chunks($segments->all());
             $stream->forceFill(['event_extraction_chunks_done' => 0, 'event_extraction_chunks_total' => count($chunks)])->save();
             foreach ($chunks as $number => $chunk) {
+                // Cancelled in the UI? Stops between chunks (a chunk takes ~5-10 s).
+                $canceller->throwIfRequested($stream, 'event_extraction');
                 $input = collect($chunk)->map(fn ($segment, $index) => [
                     'index' => $index,
                     'start_time' => (float) $segment->start_time,
@@ -99,12 +103,16 @@ class ExtractStreamEventsJob implements ShouldQueue
                 $stream->forceFill(['event_extraction_chunks_done' => $number + 1])->save();
             }
 
+            $canceller->throwIfRequested($stream, 'event_extraction');
             $this->replaceEvents($stream, array_values($events));
             $stream->forceFill([
                 'event_extraction_status' => 'completed',
                 'event_extraction_error' => $skippedChunks === [] ? null : count($skippedChunks).' chunk(s) overgeslagen door onbruikbare modeloutput: '.implode('; ', $skippedChunks),
                 'event_extraction_completed_at' => now(),
             ])->save();
+        } catch (JobCancelled) {
+            // The previous events (if any) stay.
+            $canceller->restore($stream, 'event_extraction');
         } catch (\Throwable $exception) {
             $this->markAsFailed($stream, $exception->getMessage());
             throw $exception;
@@ -136,7 +144,7 @@ class ExtractStreamEventsJob implements ShouldQueue
         });
     }
 
-    /** @param array<int, \App\Models\TranscriptSegment> $chunk */
+    /** @param array<int, TranscriptSegment> $chunk */
     private function chunkRange(array $chunk): string
     {
         $format = fn (float $seconds) => gmdate('H:i:s', (int) $seconds);
@@ -152,7 +160,7 @@ class ExtractStreamEventsJob implements ShouldQueue
         }
     }
 
-    /** @param array<int, \App\Models\TranscriptSegment> $segments @return array<int, array<int, \App\Models\TranscriptSegment>> */
+    /** @param array<int, TranscriptSegment> $segments @return array<int, array<int, \App\Models\TranscriptSegment>> */
     private function chunks(array $segments): array
     {
         $size = (float) config('services.event_worker.chunk_seconds', 90);
@@ -182,7 +190,7 @@ class ExtractStreamEventsJob implements ShouldQueue
      * Validates one worker event against its chunk. Invalid events are skipped (and logged), never stored.
      * Timestamps are derived from the referenced segments, never taken from the model.
      *
-     * @param  array<int, \App\Models\TranscriptSegment>  $chunk
+     * @param  array<int, TranscriptSegment>  $chunk
      * @return array<string, mixed>|null
      */
     private function validateEvent(mixed $event, array $chunk): ?array
@@ -244,8 +252,8 @@ class ExtractStreamEventsJob implements ShouldQueue
     {
         return DB::transaction(function () use ($stream): bool {
             $locked = Stream::query()->whereKey($stream->id)->lockForUpdate()->first();
-            // Completed: a late retry of a killed attempt after the stream was analysed again.
-            if ($locked === null || in_array($locked->event_extraction_status, ['processing', 'completed'], true)) {
+            // Completed: a late retry of a killed attempt after the stream was analysed again. Pending: cancelled while queued.
+            if ($locked === null || ! in_array($locked->event_extraction_status, Stream::STARTABLE_STATUSES, true)) {
                 return false;
             }
             $locked->forceFill([
@@ -255,7 +263,9 @@ class ExtractStreamEventsJob implements ShouldQueue
                 'event_extraction_chunks_total' => null,
                 'event_extraction_started_at' => now(),
                 'event_extraction_completed_at' => null,
+                'event_extraction_cancel_requested_at' => null,
             ])->save();
+
             return true;
         });
     }

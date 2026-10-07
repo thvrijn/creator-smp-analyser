@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\VoiceProfiles;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -55,6 +56,13 @@ class Stream extends Model
         'event_extraction_completed_at',
     ];
 
+    protected static function booted(): void
+    {
+        // The voice profiles (VoiceProfiles) are built from streams' voices and their players.
+        static::saved(fn (Stream $stream) => $stream->wasChanged('transcription_speakers') ? VoiceProfiles::forget() : null);
+        static::deleted(fn () => VoiceProfiles::forget());
+    }
+
     protected function casts(): array
     {
         return [
@@ -75,6 +83,9 @@ class Stream extends Model
             'event_extraction_chunks_total' => 'integer',
             'event_extraction_started_at' => 'datetime',
             'event_extraction_completed_at' => 'datetime',
+            'transcription_cancel_requested_at' => 'datetime',
+            'event_extraction_cancel_requested_at' => 'datetime',
+            'video_download_cancel_requested_at' => 'datetime',
         ];
     }
 
@@ -85,6 +96,12 @@ class Stream extends Model
 
     /** A job saves progress at least every few seconds; this long without any means it was killed (a restart or crash). */
     public const STALLED_AFTER_MINUTES = 10;
+
+    /**
+     * The statuses a queued job may start from: queued, waiting for a worker, or its own retry after a failure.
+     * Anything else (e.g. back to pending or completed after a cancel) means the job is no longer wanted.
+     */
+    public const STARTABLE_STATUSES = ['queued', 'waiting', 'failed'];
 
     /**
      * Whether the job behind this status column is on "processing" or "waiting" (for a worker) but no longer running,
@@ -101,6 +118,12 @@ class Stream extends Model
     public function activeWorker(): HasOne
     {
         return $this->hasOne(Worker::class, 'current_stream_id');
+    }
+
+    /** Names given by hand to this stream's diarized speakers. */
+    public function speakerNames(): HasMany
+    {
+        return $this->hasMany(StreamSpeaker::class);
     }
 
     public function transcriptSegments(): HasMany

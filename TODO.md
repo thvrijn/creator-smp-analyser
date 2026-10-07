@@ -16,7 +16,7 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 ## Features
 
 - [ ] Sprekerherkenning op echte streams beoordelen: kloppen de sprekers en is speaker 0 echt de streamer? Daarvoor eerst een Hugging Face-token (`HF_TOKEN`) in `.env` en in de `worker/.env` van elke worker, met de voorwaarden van pyannote/speaker-diarization-3.1 en pyannote/segmentation-3.0 geaccepteerd.
-- [ ] Sprekerherkenning stap 2: namen aan stemmen koppelen. Elke speler is speaker 0 in zijn eigen stream, dus de stem-embedding daarvan (`streams.transcription_speakers`) wordt zijn stemprofiel. Andere sprekers in andere streams vergelijken met die profielen (cosine similarity, met een drempel; anders "onbekend").
+- [ ] Drempel voor stemherkenning meten zodra meerdere spelers streams met sprekerherkenning hebben: `php artisan voices:evaluate`, daarna `VOICE_MATCH_THRESHOLD` bijstellen (nu 0,6, nog niet gemeten).
 - [ ] Sprekers meegeven aan Qwen bij event-extractie (wie zegt wat), en het effect meten met `make prompt-eval`
 - [ ] Clips in 1080p ophalen (kiezen, bekijken en bijstellen is klaar): alleen dat stuk downloaden. Let op: ffmpeg-seek in de HLS-playlist van Twitch blijft hangen, dus zelf de benodigde `.ts`-segmenten uit de m3u8 halen en lokaal knippen. Moet binnen de bewaartermijn: Partners 60 dagen, 2 spelers maar 7 dagen.
 - [ ] Downloads op een eigen queue-worker zetten, zodat ze transcripties niet ophouden
@@ -54,6 +54,13 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 -
 
 ## Klaar
+
+- [x] Sprekerherkenning stap 2: een spreker in een andere stream wordt aan zijn stem herkend als speler (stemprofiel per speler uit hun eigen streams en sprekers die je benoemde). Herkend staat er met een vraagteken; "✓ Klopt" bevestigt het en maakt het profiel beter.
+
+- [x] Sprekers corrigeren op de streampagina: een spreker een speler of naam geven, twee sprekers samenvoegen, en één zin aan een andere spreker geven.
+
+- [x] Jobs annuleren: ✕ Annuleren bij transcriptie, analyse en audio ophalen (in de wachtrij meteen, een lopende job binnen enkele seconden; de worker stopt ook). Een vorig transcript of vorige events blijven staan.
+- [x] Activiteitenlog voor de admin (Systeem → Activiteit): inloggen, mislukte pogingen, uitloggen en alles wat iemand verandert, met resultaat en IP.
 
 - [x] Inloggen verplicht: zonder account kom je alleen op `/login`. Accounts maak je met `make user` (op de Pi: `php artisan user:create`, zie `DEPLOY.md`). Inloggen met een gebruikersnaam (hoofdletters maken niet uit). Uitloggen en je wachtwoord wijzigen via het profielmenu rechtsboven. Alleen de admin (thvrijn2002@gmail.com) maakt en verwijdert accounts op de pagina Gebruikers; zelf een account aanmaken kan niet.
 

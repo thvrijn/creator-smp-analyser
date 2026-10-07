@@ -49,21 +49,26 @@ class TranscriptionWorker
         $body = $response->toPsrResponse()->getBody();
         $buffer = '';
 
-        while (! $body->eof()) {
-            $buffer .= $body->read(8192);
+        try {
+            while (! $body->eof()) {
+                $buffer .= $body->read(8192);
 
-            while (($newline = strpos($buffer, "\n")) !== false) {
-                $line = trim(substr($buffer, 0, $newline));
-                $buffer = substr($buffer, $newline + 1);
-                if ($line === '') {
-                    continue;
+                while (($newline = strpos($buffer, "\n")) !== false) {
+                    $line = trim(substr($buffer, 0, $newline));
+                    $buffer = substr($buffer, $newline + 1);
+                    if ($line === '') {
+                        continue;
+                    }
+                    $event = json_decode($line, true);
+                    if (! is_array($event)) {
+                        throw new RuntimeException('De transcriptie-worker gaf ongeldige voortgangsdata.');
+                    }
+                    $this->handleEvent($event, $segments, $onEvent);
                 }
-                $event = json_decode($line, true);
-                if (! is_array($event)) {
-                    throw new RuntimeException('De transcriptie-worker gaf ongeldige voortgangsdata.');
-                }
-                $this->handleEvent($event, $segments, $onEvent);
             }
+        } finally {
+            // Also when $onEvent throws (e.g. a cancelled job): the worker notices the closed connection and stops.
+            $body->close();
         }
 
         if (trim($buffer) !== '') {

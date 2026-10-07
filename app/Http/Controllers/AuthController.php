@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
+use App\Services\ActivityLogger;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -20,7 +22,7 @@ class AuthController extends Controller
         return Inertia::render('Auth/Login');
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, ActivityLogger $activity): RedirectResponse
     {
         $credentials = $request->validate([
             'username' => ['required', 'string'],
@@ -32,25 +34,31 @@ class AuthController extends Controller
 
         // Per username and IP, so guessing a password is slow without locking out others.
         $key = $credentials['username'].'|'.$request->ip();
+        // Failed attempts are logged with the name that was tried, so the admin sees someone guessing.
+        $failed = function (string $message) use ($request, $activity, $credentials): ValidationException {
+            $activity->log($request, 'auth.failed', 'Mislukte inlogpoging', User::where('username', $credentials['username'])->first(), succeeded: false, result: $message, username: Str::limit($credentials['username'], 50, ''));
+
+            return ValidationException::withMessages(['username' => $message]);
+        };
         if (RateLimiter::tooManyAttempts($key, self::MAX_ATTEMPTS)) {
-            throw ValidationException::withMessages([
-                'username' => 'Te veel pogingen. Probeer het over '.RateLimiter::availableIn($key).' seconden opnieuw.',
-            ]);
+            throw $failed('Te veel pogingen. Probeer het over '.RateLimiter::availableIn($key).' seconden opnieuw.');
         }
 
         if (! Auth::attempt($credentials, $request->boolean('remember'))) {
             RateLimiter::hit($key);
-            throw ValidationException::withMessages(['username' => 'Deze combinatie van gebruikersnaam en wachtwoord klopt niet.']);
+            throw $failed('Deze combinatie van gebruikersnaam en wachtwoord klopt niet.');
         }
 
         RateLimiter::clear($key);
         $request->session()->regenerate();
+        $activity->log($request, 'auth.login', 'Ingelogd', $request->user());
 
         return redirect()->intended(route('dashboard'));
     }
 
-    public function destroy(Request $request): RedirectResponse
+    public function destroy(Request $request, ActivityLogger $activity): RedirectResponse
     {
+        $activity->log($request, 'auth.logout', 'Uitgelogd', $request->user());
         Auth::logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();

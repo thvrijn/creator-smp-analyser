@@ -15,6 +15,17 @@ return [
     'transcription_worker' => [
         'timeout' => (int) env('TRANSCRIPTION_WORKER_TIMEOUT', 3600),
     ],
+    // Recognising a speaker in another stream by comparing voice embeddings (App\Services\VoiceProfiles).
+    // Measure with `php artisan voices:evaluate` once several players have diarized streams, and tune these.
+    'voices' => [
+        // Cosine similarity a speaker's voice needs with a player's profile to be shown as that player.
+        'match_threshold' => (float) env('VOICE_MATCH_THRESHOLD', 0.6),
+        // ...and how much better the best player must be than the next one.
+        'match_margin' => (float) env('VOICE_MATCH_MARGIN', 0.05),
+        // Shorter speakers have unreliable embeddings: not matched and not used in profiles.
+        'min_seconds' => (float) env('VOICE_MIN_SECONDS', 20),
+    ],
+
     'event_worker' => [
         'timeout' => (int) env('EVENT_WORKER_TIMEOUT', 1800),
         'model' => env('EVENT_MODEL', 'unsloth/Qwen3-8B-bnb-4bit'),

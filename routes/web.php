@@ -1,10 +1,12 @@
 <?php
 
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClipController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\PlayerController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SpeakerController;
 use App\Http\Controllers\StreamController;
 use App\Http\Controllers\TwitchVodController;
 use App\Http\Controllers\UserController;
@@ -36,6 +38,11 @@ Route::middleware('auth')->group(function (): void {
     Route::get('/streams/{stream}', [StreamController::class, 'show'])->name('streams.show');
     Route::get('/streams/{stream}/audio', [StreamController::class, 'audio'])->name('streams.audio');
     Route::post('/streams/{stream}/download-audio', [TwitchVodController::class, 'download'])->name('streams.download-audio');
+    Route::post('/streams/{stream}/cancel/{task}', [StreamController::class, 'cancel'])
+        ->whereIn('task', ['transcription', 'event_extraction', 'video_download'])->name('streams.cancel');
+    Route::put('/streams/{stream}/speakers/{speaker}', [SpeakerController::class, 'update'])->whereNumber('speaker')->name('streams.speakers.update');
+    Route::post('/streams/{stream}/speakers/{speaker}/merge', [SpeakerController::class, 'merge'])->whereNumber('speaker')->name('streams.speakers.merge');
+    Route::put('/segments/{segment}/speaker', [SpeakerController::class, 'segment'])->name('segments.speaker');
     Route::post('/streams/{stream}/extract-events', [StreamController::class, 'extractEvents'])->name('streams.extract-events');
     Route::get('/players', [PlayerController::class, 'index'])->name('players.index');
     Route::post('/players', [PlayerController::class, 'store'])->name('players.store');
@@ -53,11 +60,12 @@ Route::middleware('auth')->group(function (): void {
     Route::delete('/clips/{clip}', [ClipController::class, 'destroy'])->name('clips.destroy');
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile');
     Route::put('/profile/password', [ProfileController::class, 'updatePassword'])->name('profile.password');
-    // Only the admin manages accounts; nobody can sign up.
+    // Only the admin manages accounts (nobody can sign up) and reads the activity log.
     Route::middleware(EnsureUserIsAdmin::class)->group(function (): void {
         Route::get('/users', [UserController::class, 'index'])->name('users.index');
         Route::post('/users', [UserController::class, 'store'])->name('users.store');
         Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+        Route::get('/activity', [ActivityLogController::class, 'index'])->name('activity.index');
     });
     Route::get('/settings', [WorkerController::class, 'settings'])->name('settings');
     Route::put('/workers/{worker}', [WorkerController::class, 'update'])->name('workers.update');

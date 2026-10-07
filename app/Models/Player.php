@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\VoiceProfiles;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -19,6 +20,12 @@ class Player extends Model
         'twitch_login',
         'vods_synced_at',
     ];
+
+    protected static function booted(): void
+    {
+        // The voice profiles (VoiceProfiles) are built from streams' voices and their players.
+        static::deleted(fn () => VoiceProfiles::forget());
+    }
 
     protected function casts(): array
     {

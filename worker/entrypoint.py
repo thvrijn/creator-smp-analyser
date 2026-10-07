@@ -34,6 +34,10 @@ MODELS = ModelManager(idle_seconds=MODEL_IDLE_SECONDS, max_loaded=int(os.getenv(
 _event_extractor = EventExtractor(MODELS)
 
 
+class ClientGone(Exception):
+    """The app closed the connection (the job was cancelled or killed): stop working."""
+
+
 class ProcessingError(Exception):
     pass
 
@@ -136,12 +140,18 @@ def extract_audio(
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert process.stdout is not None
-        for line in process.stdout:
-            if line.startswith("out_time_ms=") and on_progress is not None:
-                try:
-                    on_progress(max(0.0, float(line.split("=", 1)[1]) / 1_000_000))
-                except ValueError:
-                    continue
+        try:
+            for line in process.stdout:
+                if line.startswith("out_time_ms=") and on_progress is not None:
+                    try:
+                        on_progress(max(0.0, float(line.split("=", 1)[1]) / 1_000_000))
+                    except ValueError:
+                        continue
+        except BaseException:
+            # E.g. ClientGone from the progress callback: don't leave FFmpeg running.
+            process.kill()
+            process.wait()
+            raise
         stderr = process.stderr.read() if process.stderr is not None else ""
         return_code = process.wait(timeout=FFMPEG_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
@@ -260,6 +270,8 @@ def _transcribe_stream(
                     result_segments.append({**item, "_audio_start": chunk_done + float(segment.start), "_audio_end": chunk_done + float(segment.end)})
                     processed = min(duration, chunk_done + float(segment.end))
                     send({"type": "progress", "stage": "transcribing", "processed_seconds": processed, "progress": progress_for(processed, duration), "segment_count": len(result_segments)})
+            except ClientGone:
+                raise
             except Exception as exc:
                 raise ProcessingError(f"Whisper mislukt: {exc}") from exc
             if keep_audio:
@@ -295,6 +307,8 @@ def add_speakers(transcript: dict[str, Any], send: Callable[[dict[str, Any]], No
             turns, voices = diarization.diarize(pipeline, waveform, on_progress)
         del waveform
         speakers, summary = diarization.assign_speakers([(segment["_audio_start"], segment["_audio_end"]) for segment in segments], turns, voices)
+    except ClientGone:
+        raise
     except Exception as exc:
         message = f"Sprekerherkenning mislukt: {exc}"
         print(f"worker: {message}", flush=True)
@@ -386,6 +400,8 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
         try:
             transcribe_stream(stream_id, video_path, self.write_event, ranges, video_url)
+        except ClientGone:
+            print(f"worker: stream {stream_id}: the app closed the connection (cancelled), stopped", flush=True)
         except (ProcessingError, RuntimeError, ValueError) as exc:
             self.write_error_event(str(exc))
         except Exception as exc:
@@ -396,8 +412,11 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         self.send_json({"error": message}, status=status)
 
     def write_event(self, event: dict[str, Any]) -> None:
-        self.wfile.write((json.dumps(event) + "\n").encode("utf-8"))
-        self.wfile.flush()
+        try:
+            self.wfile.write((json.dumps(event) + "\n").encode("utf-8"))
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise ClientGone() from exc
 
     def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
         encoded = json.dumps(payload).encode("utf-8")
@@ -411,7 +430,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         print(f"worker: {self.path} failed: {message}", flush=True)
         try:
             self.write_event({"type": "error", "error": message})
-        except (BrokenPipeError, ConnectionResetError):
+        except ClientGone:
             pass
 
     def log_message(self, format: str, *args: Any) -> None:

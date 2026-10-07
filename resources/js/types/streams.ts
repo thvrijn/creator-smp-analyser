@@ -35,6 +35,8 @@ export type TranscriptionStatus = {
     transcription_stalled: boolean;
     event_extraction_stalled: boolean;
     worker_name: string | null;
+    transcription_cancelling: boolean;
+    event_extraction_cancelling: boolean;
 };
 
 export type Stream = {
@@ -57,6 +59,10 @@ export type Stream = {
     video_download_stalled: boolean;
     // The worker running this stream's transcription or analysis right now.
     worker_name: string | null;
+    // Cancelled in the UI; the running job stops within a few seconds.
+    transcription_cancelling: boolean;
+    event_extraction_cancelling: boolean;
+    video_download_cancelling: boolean;
     video_offset_seconds: number;
     transcription_ranges: [number, number][] | null;
     transcription_status: TranscriptionState;

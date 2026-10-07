@@ -71,7 +71,7 @@ class TranscriptionJobTest extends TestCase
         Http::fake(['*/transcribe' => Http::response(json_encode(['type' => 'error', 'error' => 'Whisper failed'])."\n")]);
 
         try {
-            (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+            (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
         } catch (\RuntimeException) {
         }
 
@@ -87,7 +87,9 @@ class TranscriptionJobTest extends TestCase
         $stream->update(['transcription_status' => 'queued', 'transcription_stage' => 'queued']);
         Http::fake(['*/transcribe' => Http::response(json_encode(['type' => 'segment', 'start' => 1, 'end' => 2, 'text' => 'Hallo'])."\n")]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $this->assertSame('completed', $stream->refresh()->transcription_status);
         $this->assertSame(1, $stream->transcriptSegments()->count());
@@ -101,7 +103,9 @@ class TranscriptionJobTest extends TestCase
         $stream->update(['transcription_status' => 'queued', 'transcription_stage' => 'queued', 'transcription_ranges' => [[0, 793], [10000, 18801]]]);
         Http::fake(['*/transcribe' => Http::response(json_encode(['type' => 'segment', 'start' => 10001, 'end' => 10003, 'text' => 'Hallo'])."\n")]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         Http::assertSent(fn ($request) => $request['ranges'] === [[0, 793], [10000, 18801]]);
         $this->assertSame('completed', $stream->refresh()->transcription_status);
@@ -148,7 +152,9 @@ class TranscriptionJobTest extends TestCase
             ['start' => 1.25, 'end' => 2.5, 'text' => ' Hello '],
         ]])]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $stream->refresh();
         $this->assertSame('completed', $stream->transcription_status);
@@ -167,9 +173,10 @@ class TranscriptionJobTest extends TestCase
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '2.000', 'text' => 'Existing']);
         Http::fake(['*' => Http::response(['error' => 'worker unavailable'], 503)]);
 
+        $this->markQueued($stream, 'transcription');
         $job = new TranscribeStreamJob($stream->id);
         try {
-            $job->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+            $job->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
         } catch (\Throwable $exception) {
             $job->failed($exception);
         }
@@ -189,7 +196,8 @@ class TranscriptionJobTest extends TestCase
         Storage::disk('local')->put($stream->video_path, 'video');
         Http::fake();
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         Http::assertNothingSent();
         $this->assertDatabaseHas('streams', ['id' => $stream->id, 'transcription_status' => 'processing']);
@@ -203,7 +211,9 @@ class TranscriptionJobTest extends TestCase
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '2.000', 'text' => 'Old']);
         Http::fake(['*' => Http::response(['segments' => [['start' => 5, 'end' => 6, 'text' => 'New']]])]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $this->assertDatabaseMissing('transcript_segments', ['text' => 'Old']);
         $this->assertDatabaseHas('transcript_segments', ['text' => 'New']);
@@ -226,7 +236,9 @@ class TranscriptionJobTest extends TestCase
         ]);
         Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/x-ndjson'])]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $stream->refresh();
         $this->assertSame('completed', $stream->transcription_stage);
@@ -258,7 +270,9 @@ class TranscriptionJobTest extends TestCase
         ]);
         Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/x-ndjson'])]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $this->assertSame(['Hoi Sam' => 0, 'Hoi!' => 1, 'Hmm' => null], $stream->transcriptSegments()->orderBy('start_time')->pluck('speaker', 'text')->all());
         // JSON stores 30.0 as 30.
@@ -281,7 +295,9 @@ class TranscriptionJobTest extends TestCase
         ]);
         Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/x-ndjson'])]);
 
-        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+        $this->markQueued($stream, 'transcription');
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
         $stream->refresh();
         $this->assertSame('completed', $stream->transcription_status);

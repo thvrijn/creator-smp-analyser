@@ -200,6 +200,34 @@ class WorkerTest(unittest.TestCase):
         self.assertIn({"type": "warning", "message": "Sprekerherkenning mislukt: CUDA out of memory"}, events)
         self.assertEqual(events[-1]["type"], "completed")
 
+    def test_a_closed_connection_stops_the_transcription(self) -> None:
+        # The app closes the connection when the job is cancelled; the next event write raises ClientGone.
+        sent: list[dict] = []
+
+        def send(event: dict) -> None:
+            if event["type"] == "segment":
+                raise entrypoint.ClientGone()
+            sent.append(event)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "stream.mp4").write_bytes(b"video")
+            with patch.object(entrypoint, "STORAGE_ROOT", root), \
+                    patch.object(entrypoint, "probe_duration", return_value=100.0), \
+                    patch.object(entrypoint, "extract_audio"), \
+                    patch.object(entrypoint, "load_whisper_model", return_value=FakeModel()):
+                with self.assertRaises(entrypoint.ClientGone):
+                    entrypoint.transcribe_stream(12, "stream.mp4", send)
+
+        self.assertNotIn("completed", [event["type"] for event in sent])
+
+    def test_a_closed_connection_during_diarization_is_not_a_warning(self) -> None:
+        def diarize(_pipeline, _waveform, _on_progress):
+            raise entrypoint.ClientGone()
+
+        with self.assertRaises(entrypoint.ClientGone):
+            self.transcribe_with_diarization(diarize)
+
     def test_ranges_are_clipped_to_the_file(self) -> None:
         self.assertEqual(entrypoint.transcription_spans(None, 50.0), [(0.0, 50.0)])
         self.assertEqual(entrypoint.transcription_spans([[-5, 10], [40, 90], [60, 70]], 50.0), [(0.0, 10.0), (40.0, 50.0)])

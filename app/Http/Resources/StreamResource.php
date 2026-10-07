@@ -47,6 +47,10 @@ class StreamResource extends JsonResource
             'event_extraction_stalled' => $this->isStalled('event_extraction_status'),
             'video_download_stalled' => $this->isStalled('video_download_status'),
             'worker_name' => $this->activeWorker?->name,
+            // Cancelled in the UI, the running job stops within a few seconds.
+            'transcription_cancelling' => $this->transcription_cancel_requested_at !== null,
+            'event_extraction_cancelling' => $this->event_extraction_cancel_requested_at !== null,
+            'video_download_cancelling' => $this->video_download_cancel_requested_at !== null,
             'status' => $this->ended_at === null ? 'Live' : 'Finished',
         ];
     }
