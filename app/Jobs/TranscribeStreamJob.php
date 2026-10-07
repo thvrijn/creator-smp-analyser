@@ -13,6 +13,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class TranscribeStreamJob implements ShouldQueue
@@ -75,9 +76,19 @@ class TranscribeStreamJob implements ShouldQueue
         $phaseStartedProcessed = 0.0;
         $lastStage = null;
         $durationSeconds = null;
+        $speakers = null;
         try {
-            $segments = $transcriber->transcribe($worker, $stream, function (array $event) use ($stream, &$lastProgress, &$lastUpdateAt, &$phaseStartedAt, &$phaseStartedProcessed, &$lastStage, &$durationSeconds): void {
+            $segments = $transcriber->transcribe($worker, $stream, function (array $event) use ($stream, &$lastProgress, &$lastUpdateAt, &$phaseStartedAt, &$phaseStartedProcessed, &$lastStage, &$durationSeconds, &$speakers): void {
             $type = $event['type'] ?? null;
+            if ($type === 'speakers') {
+                $speakers = $this->speakers($event['speakers'] ?? null);
+                return;
+            }
+            if ($type === 'warning') {
+                // E.g. diarization failed: the transcript is kept without speakers.
+                Log::warning("Transcription of stream {$stream->id}: ".($event['message'] ?? 'warning'));
+                return;
+            }
             $stage = isset($event['stage']) ? (string) $event['stage'] : null;
             $progress = isset($event['progress']) ? max(0, min(100, (int) round((float) $event['progress']))) : null;
             $force = in_array($type, ['stage', 'duration'], true);
@@ -141,7 +152,7 @@ class TranscribeStreamJob implements ShouldQueue
             throw $exception;
         }
 
-        DB::transaction(function () use ($stream, $segments): void {
+        DB::transaction(function () use ($stream, $segments, $speakers): void {
             $latest = Stream::findOrFail($stream->id);
             $latest->transcriptSegments()->delete();
             $latest->transcriptSegments()->createMany($segments);
@@ -154,8 +165,31 @@ class TranscribeStreamJob implements ShouldQueue
                 'transcription_processed_seconds' => $latest->transcription_duration_seconds ?? $latest->transcription_processed_seconds,
                 'transcription_segment_count' => count($segments),
                 'transcription_eta_seconds' => 0,
+                'transcription_speakers' => $speakers,
             ])->save();
         });
+    }
+
+    /**
+     * The worker's speaker summary: per speaker its number, speaking time and voice embedding.
+     *
+     * @return array<int, array{speaker: int, seconds: float, embedding: array<int, float>|null}>|null
+     */
+    private function speakers(mixed $speakers): ?array
+    {
+        if (! is_array($speakers)) {
+            return null;
+        }
+
+        return collect($speakers)
+            ->filter(fn ($speaker) => is_array($speaker) && is_int($speaker['speaker'] ?? null) && is_numeric($speaker['seconds'] ?? null))
+            ->map(fn (array $speaker) => [
+                'speaker' => $speaker['speaker'],
+                'seconds' => (float) $speaker['seconds'],
+                'embedding' => is_array($speaker['embedding'] ?? null) ? array_map('floatval', $speaker['embedding']) : null,
+            ])
+            ->values()
+            ->all();
     }
 
     public function failed(\Throwable $exception): void

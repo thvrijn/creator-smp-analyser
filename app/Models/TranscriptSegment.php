@@ -16,6 +16,7 @@ class TranscriptSegment extends Model
         'start_time',
         'end_time',
         'text',
+        'speaker',
     ];
 
     protected function casts(): array
@@ -23,6 +24,7 @@ class TranscriptSegment extends Model
         return [
             'start_time' => 'decimal:3',
             'end_time' => 'decimal:3',
+            'speaker' => 'integer',
         ];
     }
 

@@ -2,14 +2,15 @@
 import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import FlashMessages from '../../Components/FlashMessages.vue';
+import AudioPlayer from '../../Components/AudioPlayer.vue';
 import TwitchPlayer from '../../Components/TwitchPlayer.vue';
-import { eventBadgeClass, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../../composables/streamStatus';
+import { downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel } from '../../composables/streamStatus';
 import AppLayout from '../../Layouts/AppLayout.vue';
 import { formatDate, type Stream } from '../../types/streams';
 
 type StreamDetail = Stream & { duration_seconds: number | null; segment_count: number };
 type StreamEvent = { id: number; type: string; title: string; description: string; start_time: number; end_time: number; confidence: number; segment_count: number };
-type Segment = { id: number; start_time: number; end_time: number; text: string };
+type Segment = { id: number; start_time: number; end_time: number; text: string; speaker: number | null };
 type PaginationLink = { url: string | null; label: string; active: boolean };
 type Clip = { id: number; event_id: number | null; title: string; start_seconds: number; end_seconds: number };
 type Pagination = { data: Segment[]; current_page: number; last_page: number; per_page: number; total: number; from: number | null; to: number | null };
@@ -22,6 +23,8 @@ watch(() => props.search, (value) => { search.value = value; });
 
 const streamUrl = '/streams/' + props.stream.id;
 const isHighlighted = (segment: Segment) => props.highlighted_segment_ids.includes(segment.id);
+// Speaker 0 speaks the most in the stream: almost always the streamer. The others are numbered voices, not yet names.
+const speakerLabel = (speaker: number) => speaker === 0 ? stream.player.name : `Spreker ${speaker}`;
 const selectedEvent = computed(() => props.events.find((event) => event.id === props.selected_event_id));
 
 // The tab lives in the URL (?tab=), so links and the back button work. Without one, a selected
@@ -55,6 +58,26 @@ const scrollToHighlight = async () => {
     else segment.scrollIntoView({ block: 'center' });
 };
 watch([() => props.highlighted_segment_ids, activeTab], () => { void scrollToHighlight(); });
+
+// The stream's own audio file. Segment and event times are times in that file, so they seek straight to the moment.
+const audio = ref<InstanceType<typeof AudioPlayer> | null>(null);
+const audioTime = ref<number | null>(null);
+const audioPlaying = ref(false);
+const playFrom = (seconds: number) => { void audio.value?.playFrom(seconds); };
+// The segment on this transcript page that is playing now; it lights up and the list follows it while playing.
+const playingSegmentId = computed(() => {
+    const time = audioTime.value;
+    if (time === null) return null;
+    return props.segments.data.find((segment) => segment.start_time <= time && time < segment.end_time)?.id ?? null;
+});
+watch(playingSegmentId, async (id) => {
+    if (id === null || !audioPlaying.value) return;
+    await nextTick();
+    const list = transcriptList.value;
+    const segment = list?.querySelector<HTMLElement>('.segment-playing');
+    if (!list || !segment || list.scrollHeight <= list.clientHeight) return;
+    list.scrollTop = segment.offsetTop - (list.clientHeight - segment.clientHeight) / 2;
+});
 
 // Clips are in seconds from the stream (VOD) start; transcript and event times are from the start of the media file,
 // which for a Twitch VOD can start later (video_offset_seconds).
@@ -100,7 +123,14 @@ const watchClip = async (clip: Clip) => { selectedClipId.value = clip.id; await 
 
 // While a job runs, poll the status and reload the page data once it finishes.
 let pollTimer: number | undefined;
+// The audio download's progress is only in the page data, so reload the stream while it runs.
+const audioState = computed(() => stream.video_path ? { badge: 'completed', label: 'Klaar' }
+    : isDownloadActive(stream) ? { badge: 'processing', label: downloadLabel(stream) }
+    : stream.video_download_status === 'failed' ? { badge: 'failed', label: 'Mislukt' }
+    : !stream.ended_at ? { badge: 'pending', label: 'Nog live' }
+    : { badge: 'pending', label: 'Niet opgehaald' });
 const poll = async () => {
+    if (isDownloadActive(stream)) { router.reload({ only: ['stream'] }); return; }
     if (!isTranscriptionActive(stream) && !isEventExtractionActive(stream)) return;
     await refreshStatus(stream);
     if (!isTranscriptionActive(stream) && !isEventExtractionActive(stream)) router.reload();
@@ -119,18 +149,31 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                 <h2 class="page-section-title">{{ stream.title }}</h2>
                 <p class="muted-copy"><Link class="inline-link" :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> · {{ formatDate(stream.started_at) }} · {{ formatSeconds(stream.duration_seconds) }} · {{ stream.segment_count }} segmenten · {{ events.length }} events</p>
                 <div class="stream-hero-statuses">
+                    <span v-if="stream.twitch_video_id" class="status-pair"><span class="transcription-stage">Audio</span><span class="transcription-badge" :class="'transcription-' + audioState.badge">{{ audioState.label }}</span></span>
                     <span class="status-pair"><span class="transcription-stage">Transcript</span><span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ transcriptionLabel(stream.transcription_status) }}</span><span v-if="isTranscriptionActive(stream)" class="transcription-stage">{{ stageLabel(stream.transcription_stage) }} · {{ Math.round(stream.transcription_progress) }}%</span></span>
-                    <span class="status-pair"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ eventExtractionLabel(stream.event_extraction_status) }}</span></span>
+                    <span class="status-pair"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ eventExtractionLabel(stream.event_extraction_status) }}</span><span v-if="isEventExtractionActive(stream) && stream.event_extraction_progress !== null" class="transcription-stage">{{ stream.event_extraction_progress }}% · {{ eventProgressDetails(stream) }}</span></span>
                 </div>
+                <div v-if="!stream.video_path && stream.video_download_status === 'processing' && !stream.video_download_stalled" class="progress-track"><span :style="{ width: stream.video_download_progress + '%' }" /></div>
+                <div v-if="isEventExtractionActive(stream)" class="progress-track" :class="{ 'progress-indeterminate': stream.event_extraction_progress === null }"><span :style="stream.event_extraction_progress === null ? {} : { width: stream.event_extraction_progress + '%' }" /></div>
                 <p v-if="stream.worker_name" class="transcription-stage">Draait op worker {{ stream.worker_name }}</p>
-                <p v-if="stream.transcription_stalled || stream.event_extraction_stalled" class="stream-error">{{ stalledMessage }}</p>
+                <p v-if="stream.transcription_stalled || stream.event_extraction_stalled || stream.video_download_stalled" class="stream-error">{{ stalledMessage }}</p>
+                <p v-if="stream.video_download_error && !stream.video_path" class="stream-error">{{ stream.video_download_error }}</p>
                 <p v-if="stream.transcription_error" class="stream-error">{{ stream.transcription_error }}</p>
                 <p v-if="stream.event_extraction_error" class="stream-error">{{ stream.event_extraction_error }}</p>
             </div>
-            <button v-if="stream.transcription_status !== 'completed'" class="primary-button" type="button" :disabled="!stream.video_path || isTranscriptionActive(stream)" @click="transcribe(stream)">{{ transcribeButtonLabel(stream) }}</button>
-            <button v-else class="primary-button" type="button" :disabled="!stream.has_transcript || isEventExtractionActive(stream)" @click="extractEvents(stream)">{{ extractButtonLabel(stream) }}</button>
+            <button v-if="!stream.video_path && stream.twitch_video_id" class="primary-button" type="button" :disabled="isDownloadActive(stream) || !stream.ended_at" :title="stream.ended_at ? undefined : 'Sync de VOD\'s opnieuw als de stream voorbij is.'" @click="downloadAudio(stream)">{{ isDownloadActive(stream) ? 'Audio ophalen…' : 'Audio ophalen' }}</button>
+            <button v-else-if="stream.transcription_status !== 'completed'" class="primary-button" type="button" :disabled="!stream.video_path || isTranscriptionActive(stream)" @click="transcribe(stream)">{{ transcribeButtonLabel(stream) }}</button>
+            <div v-else class="stream-hero-actions">
+                <button class="secondary-button" type="button" :disabled="!stream.video_path || isEventExtractionActive(stream)" @click="retranscribe(stream)">Opnieuw transcriberen</button>
+                <button class="primary-button" type="button" :disabled="!stream.has_transcript || isEventExtractionActive(stream)" @click="extractEvents(stream)">{{ extractButtonLabel(stream) }}</button>
+            </div>
         </section>
         <FlashMessages />
+
+        <div v-if="stream.video_path" class="stream-audio">
+            <span class="transcription-stage">{{ stream.video_mime_type?.startsWith('audio/') ? 'Audio' : 'Video' }}<template v-if="stream.video_file_size !== null"> · {{ formatBytes(stream.video_file_size) }}</template></span>
+            <AudioPlayer ref="audio" :src="streamUrl + '/audio'" @time="audioTime = $event" @playing="audioPlaying = $event" />
+        </div>
 
         <nav class="stream-tabs" aria-label="Onderdelen van de stream">
             <Link v-for="tab in tabs" :key="tab" class="stream-tab" :class="{ 'stream-tab-active': activeTab === tab }" :href="tabUrl(tab)" :aria-current="activeTab === tab ? 'page' : undefined" preserve-state preserve-scroll>
@@ -147,8 +190,11 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                         <span class="event-description">{{ event.description }}</span>
                         <span class="event-meta">{{ Math.round(event.confidence * 100) }}% zekerheid · {{ event.segment_count }} {{ event.segment_count === 1 ? 'segment' : 'segmenten' }}</span>
                     </button>
-                    <Link v-if="eventClip(event)" class="event-clip-button event-clip-done" :href="clipUrl(eventClip(event)!)" preserve-state preserve-scroll>✓ Clip</Link>
-                    <button v-else class="event-clip-button" type="button" @click="clipFromEvent(event)">＋ Clip</button>
+                    <span class="event-actions">
+                        <button v-if="stream.video_path" class="event-clip-button" type="button" title="Afspelen vanaf dit event" @click="playFrom(event.start_time)">▶ Afspelen</button>
+                        <Link v-if="eventClip(event)" class="event-clip-button event-clip-done" :href="clipUrl(eventClip(event)!)" preserve-state preserve-scroll>✓ Clip</Link>
+                        <button v-else class="event-clip-button" type="button" @click="clipFromEvent(event)">＋ Clip</button>
+                    </span>
                 </div>
             </div>
             <div v-else class="detail-empty">
@@ -188,10 +234,13 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
                 <button class="secondary-button" type="submit">Zoeken</button>
             </form>
             <div v-if="segments.data.length" ref="transcriptList" class="transcript-list transcript-list-scroll">
-                <article v-for="segment in segments.data" :key="segment.id" class="transcript-segment" :class="{ 'segment-highlight': isHighlighted(segment) }">
+                <article v-for="segment in segments.data" :key="segment.id" class="transcript-segment" :class="{ 'segment-highlight': isHighlighted(segment), 'segment-playing': segment.id === playingSegmentId }">
                     <div class="segment-time">{{ formatSeconds(segment.start_time) }}</div>
-                    <div class="segment-copy"><p>{{ segment.text }}</p><span>{{ formatSeconds(segment.end_time) }}</span></div>
-                    <button class="segment-clip" type="button" title="Clip vanaf hier (1 minuut)" @click="clipFromSegment(segment)">✂ Clip</button>
+                    <div class="segment-copy"><div v-if="segment.speaker !== null" class="segment-speaker" :class="'segment-speaker-' + (segment.speaker === 0 ? 'main' : segment.speaker % 6)" :title="segment.speaker === 0 ? 'Spreekt het meest in deze stream, waarschijnlijk de streamer' : 'Een andere stem in deze stream'">{{ speakerLabel(segment.speaker) }}</div><p>{{ segment.text }}</p><span>{{ formatSeconds(segment.end_time) }}</span></div>
+                    <div class="segment-actions">
+                        <button v-if="stream.video_path" class="segment-clip" type="button" title="Afspelen vanaf hier" @click="playFrom(segment.start_time)">▶</button>
+                        <button class="segment-clip" type="button" title="Clip vanaf hier (1 minuut)" @click="clipFromSegment(segment)">✂ Clip</button>
+                    </div>
                 </article>
             </div>
             <div v-else class="detail-empty">

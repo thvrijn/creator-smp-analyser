@@ -8,11 +8,13 @@ use App\Models\Player;
 use App\Models\Stream;
 use App\Models\TranscriptSegment;
 use App\Services\EventExtractionWorker;
+use App\Services\InvalidModelOutputException;
 use App\Services\WorkerPool;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Mockery;
 use Tests\TestCase;
 
@@ -48,6 +50,20 @@ class EventExtractionTest extends TestCase
         $this->post('/streams/'.$stream->id.'/extract-events')->assertSessionHas('error');
 
         Queue::assertNothingPushed();
+    }
+
+    public function test_retranscription_is_refused_while_an_analysis_is_running(): void
+    {
+        Queue::fake();
+        Storage::fake('local');
+        $stream = $this->createStream('completed');
+        $stream->update(['video_path' => 'streams/1/video/stream.mp4', 'event_extraction_status' => 'processing']);
+        Storage::disk('local')->put($stream->video_path, 'video');
+
+        $this->post('/streams/'.$stream->id.'/transcribe')->assertSessionHas('error');
+
+        Queue::assertNothingPushed();
+        $this->assertSame('completed', $stream->refresh()->transcription_status);
     }
 
     public function test_extract_endpoint_dispatches_job_for_completed_transcript(): void
@@ -390,6 +406,53 @@ class EventExtractionTest extends TestCase
         $stream->refresh();
         $this->assertSame('failed', $stream->event_extraction_status);
         $this->assertSame('Job timed out', $stream->event_extraction_error);
+    }
+
+    public function test_progress_is_saved_after_every_chunk_including_skipped_ones(): void
+    {
+        config(['services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 0]);
+        $stream = $this->createStream('completed');
+        foreach ([0, 12, 24] as $start) {
+            TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => $start.'.000', 'end_time' => ($start + 3).'.000', 'text' => 'Chunk at '.$start]);
+        }
+        $seen = [];
+        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker->shouldReceive('extract')->times(3)->andReturnUsing(function () use ($stream, &$seen): array {
+            $stream->refresh();
+            $seen[] = [$stream->event_extraction_chunks_done, $stream->event_extraction_chunks_total];
+            if (count($seen) === 2) {
+                throw new InvalidModelOutputException('Event model returned invalid JSON');
+            }
+            return [];
+        });
+
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class));
+
+        $this->assertSame([[0, 3], [1, 3], [2, 3]], $seen);
+        $stream->refresh();
+        $this->assertSame(3, $stream->event_extraction_chunks_done);
+        $this->assertSame(100, $stream->eventExtractionProgress());
+    }
+
+    public function test_status_endpoint_reports_analysis_progress_and_eta(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $stream = $this->createStream('completed');
+        $stream->forceFill([
+            'event_extraction_status' => 'processing',
+            'event_extraction_started_at' => now()->subSeconds(100),
+            'event_extraction_chunks_done' => 10,
+            'event_extraction_chunks_total' => 40,
+        ])->save();
+
+        $this->getJson('/streams/'.$stream->id.'/transcription-status')
+            ->assertOk()
+            ->assertJson([
+                'event_extraction_progress' => 25,
+                'event_extraction_chunks_done' => 10,
+                'event_extraction_chunks_total' => 40,
+                'event_extraction_eta_seconds' => 300,
+            ]);
     }
 
     private function createStream(string $transcriptionStatus): Stream

@@ -2,10 +2,11 @@
 
 namespace App\Http\Resources;
 
+use App\Models\Stream;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
-/** @mixin \App\Models\Stream */
+/** @mixin Stream */
 class StreamResource extends JsonResource
 {
     public function toArray(Request $request): array
@@ -20,6 +21,7 @@ class StreamResource extends JsonResource
             'video_path' => $this->video_path,
             'video_mime_type' => $this->video_mime_type,
             'twitch_video_id' => $this->twitch_video_id,
+            'video_file_size' => $this->video_file_size,
             'video_download_status' => $this->video_download_status,
             'video_download_progress' => $this->video_download_progress,
             'video_download_error' => $this->video_download_error,
@@ -37,6 +39,10 @@ class StreamResource extends JsonResource
             'transcription_eta_seconds' => $this->estimatedTranscriptionEta(),
             'event_extraction_status' => $this->event_extraction_status,
             'event_extraction_error' => $this->event_extraction_error,
+            'event_extraction_progress' => $this->eventExtractionProgress(),
+            'event_extraction_chunks_done' => $this->event_extraction_chunks_done,
+            'event_extraction_chunks_total' => $this->event_extraction_chunks_total,
+            'event_extraction_eta_seconds' => $this->estimatedEventExtractionEta(),
             'transcription_stalled' => $this->isStalled('transcription_status'),
             'event_extraction_stalled' => $this->isStalled('event_extraction_status'),
             'video_download_stalled' => $this->isStalled('video_download_status'),

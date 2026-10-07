@@ -2,21 +2,22 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\TranscribeStreamJob;
-use App\Jobs\ExtractStreamEventsJob;
 use App\Http\Requests\StoreStreamRequest;
 use App\Http\Resources\StreamResource;
+use App\Jobs\ExtractStreamEventsJob;
+use App\Jobs\TranscribeStreamJob;
 use App\Models\Event;
 use App\Models\Player;
 use App\Models\Stream;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use RuntimeException;
 use Inertia\Inertia;
 use Inertia\Response;
+use RuntimeException;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class StreamController extends Controller
 {
@@ -90,6 +91,10 @@ class StreamController extends Controller
         if (in_array($stream->transcription_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('transcription_status')) {
             return $this->backToStreams()->with('error', 'Deze stream staat al in de wachtrij of wordt al getranscribeerd.');
         }
+        // A new transcript replaces the segments a running analysis is linking its events to.
+        if (in_array($stream->event_extraction_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('event_extraction_status')) {
+            return $this->backToStreams()->with('error', 'Deze stream wordt nog geanalyseerd. Transcribeer opnieuw als de analyse klaar is.');
+        }
         if (! Storage::disk(config('filesystems.default'))->exists($stream->video_path)) {
             return $this->backToStreams()->with('error', 'De streamvideo bestaat niet.');
         }
@@ -134,6 +139,10 @@ class StreamController extends Controller
             'error' => $stream->transcription_error,
             'event_extraction_status' => $stream->event_extraction_status,
             'event_extraction_error' => $stream->event_extraction_error,
+            'event_extraction_progress' => $stream->eventExtractionProgress(),
+            'event_extraction_chunks_done' => $stream->event_extraction_chunks_done,
+            'event_extraction_chunks_total' => $stream->event_extraction_chunks_total,
+            'event_extraction_eta_seconds' => $stream->estimatedEventExtractionEta(),
             'transcription_stalled' => $stream->isStalled('transcription_status'),
             'event_extraction_stalled' => $stream->isStalled('event_extraction_status'),
             'worker_name' => $stream->activeWorker?->name,
@@ -153,6 +162,8 @@ class StreamController extends Controller
             $stream->forceFill([
                 'event_extraction_status' => 'queued',
                 'event_extraction_error' => null,
+                'event_extraction_chunks_done' => 0,
+                'event_extraction_chunks_total' => null,
                 'event_extraction_started_at' => null,
                 'event_extraction_completed_at' => null,
             ])->save();
@@ -170,6 +181,15 @@ class StreamController extends Controller
     }
 
     private const SEGMENTS_PER_PAGE = 50;
+
+    /** The stream's media file for the player on the stream page; the response handles Range requests, so it can seek. */
+    public function audio(Stream $stream): BinaryFileResponse
+    {
+        $disk = Storage::disk(config('filesystems.default'));
+        abort_if(blank($stream->video_path) || ! $disk->exists($stream->video_path), 404);
+
+        return response()->file($disk->path($stream->video_path), ['Content-Type' => $stream->video_mime_type ?: 'application/octet-stream']);
+    }
 
     public function show(Request $request, Stream $stream): Response
     {
@@ -226,6 +246,7 @@ class StreamController extends Controller
                     'start_time' => (float) $segment->start_time,
                     'end_time' => (float) $segment->end_time,
                     'text' => $segment->text,
+                    'speaker' => $segment->speaker,
                 ])->values()->all(),
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),

@@ -7,12 +7,33 @@ use App\Models\Player;
 use App\Models\Stream;
 use App\Models\TranscriptSegment;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
 class TranscriptViewerTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_the_stream_audio_can_be_played_and_seeked(): void
+    {
+        Storage::fake('local');
+        $player = Player::create(['name' => 'Sophie']);
+        $stream = Stream::create(['player_id' => $player->id, 'title' => 'Audio', 'started_at' => '2026-10-03 10:00:00+00', 'source' => 'test', 'video_path' => 'streams/1/audio.m4a', 'video_mime_type' => 'audio/mp4']);
+        Storage::disk('local')->put($stream->video_path, '0123456789');
+
+        $response = $this->get('/streams/'.$stream->id.'/audio');
+        $response->assertOk()->assertHeader('Content-Type', 'audio/mp4')->assertHeader('Accept-Ranges', 'bytes');
+        $this->assertSame('0123456789', $response->streamedContent());
+
+        // The player seeks with Range requests.
+        $partial = $this->get('/streams/'.$stream->id.'/audio', ['Range' => 'bytes=4-6']);
+        $partial->assertStatus(206)->assertHeader('Content-Range', 'bytes 4-6/10');
+        $this->assertSame('456', $partial->streamedContent());
+
+        $stream->update(['video_path' => null]);
+        $this->get('/streams/'.$stream->id.'/audio')->assertNotFound();
+    }
 
     public function test_transcript_page_returns_segments_in_chronological_order(): void
     {

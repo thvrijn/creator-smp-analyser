@@ -15,6 +15,9 @@ return Application::configure(basePath: dirname(__DIR__))
         // On the Pi, the reverse proxy terminates HTTPS and proxies to the app; trust its X-Forwarded-* headers
         // so URLs and secure cookies use https. The app publishes no port there, only the proxy reaches it.
         $middleware->trustProxies(at: '*');
+        // Every page needs a login (routes/web.php); a logged-in user on /login goes to the dashboard.
+        $middleware->redirectGuestsTo('/login');
+        $middleware->redirectUsersTo('/dashboard');
         $middleware->web(append: [
             \App\Http\Middleware\HandleInertiaRequests::class,
         ]);

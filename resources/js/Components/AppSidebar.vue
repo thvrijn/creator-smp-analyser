@@ -3,9 +3,9 @@ import { Link, usePage } from '@inertiajs/vue3';
 import { computed } from 'vue';
 
 type NavItem = { label: string; href: string; icon: string };
-const page = usePage();
+const page = usePage<{ auth: { user: { is_admin: boolean } | null } }>();
 const currentPath = computed(() => page.url.split('?')[0]);
-const sections: { label: string; items: NavItem[] }[] = [
+const sections = computed<{ label: string; items: NavItem[] }[]>(() => [
     { label: '', items: [{ label: 'Dashboard', href: '/dashboard', icon: 'grid' }, { label: 'Overzicht', href: '/overview', icon: 'timeline' }] },
     { label: 'Analyse', items: [
         { label: 'Streams', href: '/streams', icon: 'play' },
@@ -14,8 +14,12 @@ const sections: { label: string; items: NavItem[] }[] = [
         { label: 'Events', href: '/events', icon: 'spark' },
     ] },
     { label: 'Media', items: [{ label: 'Videobouwer', href: '/video-builder', icon: 'film' }] },
-    { label: 'Systeem', items: [{ label: 'Instellingen', href: '/settings', icon: 'settings' }] },
-];
+    { label: 'Systeem', items: [
+        { label: 'Instellingen', href: '/settings', icon: 'settings' },
+        // Only the admin manages accounts.
+        ...(page.props.auth?.user?.is_admin ? [{ label: 'Gebruikers', href: '/users', icon: 'users' }] : []),
+    ] },
+]);
 const isActive = (href: string) => currentPath.value === href || currentPath.value.startsWith(href + '/');
 </script>
 

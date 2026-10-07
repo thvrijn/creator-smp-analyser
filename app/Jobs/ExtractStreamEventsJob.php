@@ -70,7 +70,9 @@ class ExtractStreamEventsJob implements ShouldQueue
 
             $events = [];
             $skippedChunks = [];
-            foreach ($this->chunks($segments->all()) as $number => $chunk) {
+            $chunks = $this->chunks($segments->all());
+            $stream->forceFill(['event_extraction_chunks_done' => 0, 'event_extraction_chunks_total' => count($chunks)])->save();
+            foreach ($chunks as $number => $chunk) {
                 $input = collect($chunk)->map(fn ($segment, $index) => [
                     'index' => $index,
                     'start_time' => (float) $segment->start_time,
@@ -83,7 +85,7 @@ class ExtractStreamEventsJob implements ShouldQueue
                 } catch (InvalidModelOutputException $exception) {
                     // Unusable model output only costs this chunk; an unreachable worker still fails the job.
                     $skippedChunks[] = sprintf('chunk %d (%s): %s', $number + 1, $this->chunkRange($chunk), $exception->getMessage());
-                    continue;
+                    $workerEvents = [];
                 }
 
                 foreach ($workerEvents as $event) {
@@ -93,7 +95,8 @@ class ExtractStreamEventsJob implements ShouldQueue
                     }
                     $this->addEvent($events, $validated);
                 }
-                $stream->touch(); // still running: see Stream::isStalled()
+                // Progress; saving also touches the stream, so it does not count as stalled (Stream::isStalled()).
+                $stream->forceFill(['event_extraction_chunks_done' => $number + 1])->save();
             }
 
             $this->replaceEvents($stream, array_values($events));
@@ -248,6 +251,8 @@ class ExtractStreamEventsJob implements ShouldQueue
             $locked->forceFill([
                 'event_extraction_status' => 'processing',
                 'event_extraction_error' => null,
+                'event_extraction_chunks_done' => 0,
+                'event_extraction_chunks_total' => null,
                 'event_extraction_started_at' => now(),
                 'event_extraction_completed_at' => null,
             ])->save();

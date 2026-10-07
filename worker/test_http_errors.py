@@ -13,6 +13,10 @@ class WorkerHttpErrorTest(unittest.TestCase):
     """Errors must always be full HTTP responses; a bare body is rejected by curl as HTTP/0.9."""
 
     def setUp(self) -> None:
+        # The worker container has a WORKER_TOKEN; these tests send no token unless they test it.
+        token = patch.dict(os.environ, {"WORKER_TOKEN": ""})
+        token.start()
+        self.addCleanup(token.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), entrypoint.WorkerRequestHandler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)

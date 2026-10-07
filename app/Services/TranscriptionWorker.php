@@ -8,13 +8,17 @@ use RuntimeException;
 
 class TranscriptionWorker
 {
+    private int $segmentIndex = 0;
+
     public function __construct(private readonly WorkerPool $pool)
     {
     }
 
     /**
+     * Segments get the speaker from the worker's `speakers` event (null without diarization); $onEvent sees that event too.
+     *
      * @param  callable(array<string, mixed>): void|null  $onEvent
-     * @return array<int, array{start_time: string, end_time: string, text: string}>
+     * @return array<int, array{start_time: string, end_time: string, text: string, speaker: int|null}>
      */
     public function transcribe(Worker $worker, Stream $stream, ?callable $onEvent = null): array
     {
@@ -39,6 +43,8 @@ class TranscriptionWorker
             throw new RuntimeException((string) $response->json('error', 'De transcriptie-worker is mislukt.'));
         }
 
+        $this->segmentIndex = 0;
+        // Keyed by the worker's segment index, so the `speakers` event lines up even when a segment is dropped here.
         $segments = [];
         $body = $response->toPsrResponse()->getBody();
         $buffer = '';
@@ -72,11 +78,11 @@ class TranscriptionWorker
             throw new RuntimeException('De transcriptie leverde geen tekst op.');
         }
 
-        return $segments;
+        return array_values($segments);
     }
 
     /**
-     * @param  array<int, array{start_time: string, end_time: string, text: string}>  $segments
+     * @param  array<int, array{start_time: string, end_time: string, text: string, speaker: int|null}>  $segments
      * @param  callable(array<string, mixed>): void|null  $onEvent
      */
     private function handleEvent(array $event, array &$segments, ?callable $onEvent): void
@@ -99,9 +105,18 @@ class TranscriptionWorker
         }
 
         if (($event['type'] ?? null) === 'segment') {
+            $index = $this->segmentIndex++;
             $segment = $this->normaliseSegment($event);
             if ($segment !== null) {
-                $segments[] = $segment;
+                $segments[$index] = $segment;
+            }
+        }
+
+        if (($event['type'] ?? null) === 'speakers' && is_array($event['segment_speakers'] ?? null)) {
+            foreach ($event['segment_speakers'] as $index => $speaker) {
+                if (isset($segments[$index])) {
+                    $segments[$index]['speaker'] = is_int($speaker) && $speaker >= 0 ? $speaker : null;
+                }
             }
         }
 
@@ -110,7 +125,7 @@ class TranscriptionWorker
         }
     }
 
-    /** @return array{start_time: string, end_time: string, text: string}|null */
+    /** @return array{start_time: string, end_time: string, text: string, speaker: int|null}|null */
     private function normaliseSegment(array $segment): ?array
     {
         if (! is_numeric($segment['start'] ?? null) || ! is_numeric($segment['end'] ?? null)) {
@@ -126,6 +141,7 @@ class TranscriptionWorker
             'start_time' => number_format((float) $segment['start'], 3, '.', ''),
             'end_time' => number_format((float) $segment['end'], 3, '.', ''),
             'text' => $text,
+            'speaker' => is_int($segment['speaker'] ?? null) && $segment['speaker'] >= 0 ? $segment['speaker'] : null,
         ];
     }
 }

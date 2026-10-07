@@ -2,11 +2,25 @@
 
 namespace Tests;
 
+use App\Models\User;
 use App\Models\Worker;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 
 abstract class TestCase extends BaseTestCase
 {
+    /** Every page needs a login, so tests act as a logged-in user unless a test class turns this off. */
+    protected bool $signedIn = true;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        if ($this->signedIn) {
+            // Not saved: the session guard only needs a user object, and not every test refreshes the database.
+            $this->actingAs(new User(['username' => 'test', 'name' => 'Test']));
+        }
+    }
+
     public function createApplication()
     {
         $app = require __DIR__.'/../bootstrap/app.php';

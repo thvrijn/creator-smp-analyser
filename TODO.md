@@ -15,6 +15,9 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 ## Features
 
+- [ ] Sprekerherkenning op echte streams beoordelen: kloppen de sprekers en is speaker 0 echt de streamer? Daarvoor eerst een Hugging Face-token (`HF_TOKEN`) in `.env` en in de `worker/.env` van elke worker, met de voorwaarden van pyannote/speaker-diarization-3.1 en pyannote/segmentation-3.0 geaccepteerd.
+- [ ] Sprekerherkenning stap 2: namen aan stemmen koppelen. Elke speler is speaker 0 in zijn eigen stream, dus de stem-embedding daarvan (`streams.transcription_speakers`) wordt zijn stemprofiel. Andere sprekers in andere streams vergelijken met die profielen (cosine similarity, met een drempel; anders "onbekend").
+- [ ] Sprekers meegeven aan Qwen bij event-extractie (wie zegt wat), en het effect meten met `make prompt-eval`
 - [ ] Clips in 1080p ophalen (kiezen, bekijken en bijstellen is klaar): alleen dat stuk downloaden. Let op: ffmpeg-seek in de HLS-playlist van Twitch blijft hangen, dus zelf de benodigde `.ts`-segmenten uit de m3u8 halen en lokaal knippen. Moet binnen de bewaartermijn: Partners 60 dagen, 2 spelers maar 7 dagen.
 - [ ] Downloads op een eigen queue-worker zetten, zodat ze transcripties niet ophouden
 - [ ] Het praten met de chat vóór de gameplay overslaan bij transcriptie of analyse. Daarvoor moet bekend zijn wanneer de speler zelf joinde, en creatorsmp.nl geeft alleen wanneer iemand vertrok en hoe lang hij speelde. Optie: OCR van "<speler> joined the game" in de eigen POV, of zelf een startpunt per stream zetten.
@@ -51,6 +54,12 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 -
 
 ## Klaar
+
+- [x] Inloggen verplicht: zonder account kom je alleen op `/login`. Accounts maak je met `make user` (op de Pi: `php artisan user:create`, zie `DEPLOY.md`). Inloggen met een gebruikersnaam (hoofdletters maken niet uit). Uitloggen en je wachtwoord wijzigen via het profielmenu rechtsboven. Alleen de admin (thvrijn2002@gmail.com) maakt en verwijdert accounts op de pagina Gebruikers; zelf een account aanmaken kan niet.
+
+- [x] Audio afspelen op de streampagina: speler boven de tabs, ▶ bij elk transcriptsegment en event, het segment dat speelt licht op en het transcript volgt mee. Audio ophalen kan nu ook op de streampagina.
+- [x] Knop "Opnieuw transcriberen" (↻ in de streamtabel, knop op de streampagina) met bevestiging; geweigerd zolang een analyse loopt. Verwijderen in de streamtabel is nu een prullenbak-icoon. Analyseren toont een voortgangsbalk met stuk X/Y en resterende tijd.
+- [x] Sprekerherkenning stap 1 (diarization met pyannote): elk transcriptsegment krijgt een spreker, en de spreker die het meest praat (meestal de streamer) staat met de spelernaam in het transcript. Stemprofielen per spreker worden al bewaard voor stap 2.
 
 - [x] Automatisch deployen naar de Pi, zoals bij uitzet-tracker-new: GitHub Actions test elke push, en bij master draait de self-hosted runner op de Pi `scripts/deploy.sh` (bouwen op de Pi, wachten op lopende jobs, backup, migraties, healthcheck). Productie-image op FrankenPHP, `docker-compose.prod.yml` op het `proxy`-netwerk, `DEPLOY.md`.
 

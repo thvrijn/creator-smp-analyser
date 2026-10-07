@@ -13,7 +13,7 @@ export type PlayerStats = EditablePlayer & {
 };
 
 export type TranscriptionState = 'pending' | 'queued' | 'waiting' | 'processing' | 'completed' | 'failed';
-export type TranscriptionStage = 'not_started' | 'queued' | 'waiting_for_worker' | 'downloading_audio' | 'extracting_audio' | 'transcribing' | 'completed' | 'failed';
+export type TranscriptionStage = 'not_started' | 'queued' | 'waiting_for_worker' | 'downloading_audio' | 'extracting_audio' | 'transcribing' | 'diarizing' | 'completed' | 'failed';
 export type EventExtractionStatus = 'pending' | 'queued' | 'waiting' | 'processing' | 'completed' | 'failed';
 
 export type TranscriptionStatus = {
@@ -28,6 +28,10 @@ export type TranscriptionStatus = {
     error: string | null;
     event_extraction_status: EventExtractionStatus;
     event_extraction_error: string | null;
+    event_extraction_progress: number | null;
+    event_extraction_chunks_done: number;
+    event_extraction_chunks_total: number | null;
+    event_extraction_eta_seconds: number | null;
     transcription_stalled: boolean;
     event_extraction_stalled: boolean;
     worker_name: string | null;
@@ -42,6 +46,8 @@ export type Stream = {
     source: string | null;
     video_path: string | null;
     video_mime_type: string | null;
+    // Bytes; null for streams stored before the size was saved.
+    video_file_size: number | null;
     twitch_video_id: string | null;
     video_download_status: 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
     video_download_progress: number;
@@ -64,6 +70,11 @@ export type Stream = {
     transcription_error: string | null;
     event_extraction_status: EventExtractionStatus;
     event_extraction_error: string | null;
+    // Chunks of the analysis done, out of the total; progress is null until the job knows the total.
+    event_extraction_progress: number | null;
+    event_extraction_chunks_done: number;
+    event_extraction_chunks_total: number | null;
+    event_extraction_eta_seconds: number | null;
     has_transcript: boolean;
     status: 'Live' | 'Finished';
 };

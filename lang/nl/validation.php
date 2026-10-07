@@ -4,7 +4,10 @@
 return [
     'after_or_equal' => ':Attribute moet gelijk aan of later dan :date zijn.',
     'boolean' => ':Attribute moet waar of onwaar zijn.',
+    'confirmed' => 'De bevestiging van :attribute komt niet overeen.',
+    'current_password' => 'Het wachtwoord is onjuist.',
     'date' => ':Attribute moet een geldige datum zijn.',
+    'different' => ':Attribute moet anders zijn dan :other.',
     'exists' => 'De gekozen :attribute bestaat niet.',
     'file' => ':Attribute moet een bestand zijn.',
     'gt' => [
@@ -18,6 +21,7 @@ return [
     ],
     'min' => [
         'numeric' => ':Attribute moet minstens :min zijn.',
+        'string' => ':Attribute moet minstens :min tekens bevatten.',
     ],
     'mimes' => ':Attribute moet een bestand zijn van het type: :values.',
     'mimetypes' => ':Attribute moet een bestand zijn van het type: :values.',
@@ -42,5 +46,8 @@ return [
         'start_seconds' => 'begin',
         'end_seconds' => 'einde',
         'event_id' => 'event',
+        'current_password' => 'huidig wachtwoord',
+        'password' => 'wachtwoord',
+        'username' => 'gebruikersnaam',
     ],
 ];

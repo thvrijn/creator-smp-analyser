@@ -6,6 +6,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$root/worker/.env" ]; then set -a; . "$root/worker/.env"; set +a; fi
 WORKER_TOKEN="${WORKER_TOKEN:-$(sed -n 's/^WORKER_TOKEN=//p' "$root/.env" 2>/dev/null)}"
 export WORKER_TOKEN
+HF_TOKEN="${HF_TOKEN:-$(sed -n 's/^HF_TOKEN=//p' "$root/.env" 2>/dev/null)}"
+export HF_TOKEN
 export WORKER_HOST="${WORKER_HOST:-127.0.0.1}"
 export WORKER_NAME="${WORKER_NAME:-mac-local}"
 export WORKER_APP_URL="${WORKER_APP_URL:-http://localhost:8000}"

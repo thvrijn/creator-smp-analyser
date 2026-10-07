@@ -22,7 +22,7 @@ endif
 # Only the worker, for a machine that works for the app elsewhere (docker-compose.worker.yml).
 REMOTE_WORKER := $(COMPOSE) -f docker-compose.worker.yml
 
-.PHONY: idle help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-restart worker-token remote-worker remote-worker-stop remote-worker-logs remote-worker-check
+.PHONY: idle help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan user migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-restart worker-token remote-worker remote-worker-stop remote-worker-logs remote-worker-check
 
 help:
 	@echo "CreatorSMP4 development commands:"
@@ -41,6 +41,7 @@ help:
 	@echo "  make shell                  Open a shell in the app container"
 	@echo "  make artisan CMD='...'      Run an Artisan command"
 	@echo "  make migrate                Run pending migrations"
+	@echo "  make user                   Create a login account (or set a new password)"
 	@echo "  make test                   Run the Laravel test suite"
 	@echo "  make test-filter FILTER=... Run selected Laravel tests"
 	@echo "  make build                  Build frontend assets"
@@ -182,6 +183,10 @@ shell:
 
 artisan:
 	$(COMPOSE) exec -T app php artisan $(CMD)
+
+# Interactive (asks for the password without echoing it), so no -T.
+user:
+	$(COMPOSE) exec app php artisan user:create
 
 migrate:
 	$(COMPOSE) exec -T app php artisan migrate --force

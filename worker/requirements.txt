@@ -1,6 +1,10 @@
 faster-whisper>=1.1,<2.0
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.7.1+cu128
+# Must match torch; otherwise pip pulls a newer torchaudio that drags in another torch.
+torchaudio==2.7.1+cu128
 transformers>=4.51,<5
 accelerate>=1.6,<2
 bitsandbytes>=0.45,<1
+# Speaker diarization. 4.x needs torch>=2.8.
+pyannote.audio==3.4.0

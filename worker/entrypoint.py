@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable
 
 from faster_whisper import WhisperModel
+import diarization
 import registration
 from event_extractor import EventExtractor
 from model_manager import ModelManager
@@ -188,15 +189,33 @@ def transcribe_stream(
     # Download first (if needed), so the GPU is not held while the audio comes in.
     video_file, downloaded = resolve_input(stream_id, video_path, video_url, send)
     try:
-        # Hold Whisper for the whole stream so event requests cannot swap it out between chunks.
-        with MODELS.use("whisper", load_whisper_model, unload_whisper_model) as model:
-            return _transcribe_stream(model, stream_id, video_file, send, ranges)
+        with tempfile.TemporaryDirectory(prefix=f"creatorsmp4-{stream_id}-") as temporary_directory:
+            # With diarization the extracted audio is kept for it; Whisper is done with it by then.
+            keep_audio = diarization.enabled()
+            # Hold Whisper for the whole stream so event requests cannot swap it out between chunks.
+            with MODELS.use("whisper", load_whisper_model, unload_whisper_model) as model:
+                transcript = _transcribe_stream(model, video_file, Path(temporary_directory), send, ranges, keep_audio)
+            segments = transcript["segments"]
+            if keep_audio and segments:
+                add_speakers(transcript, send)
+            for segment in segments:
+                segment.pop("_audio_start", None)
+                segment.pop("_audio_end", None)
     finally:
         if downloaded:
             video_file.unlink(missing_ok=True)
+    send({"type": "completed", "stage": "completed", "processed_seconds": transcript["duration"], "progress": 100, "segment_count": len(segments)})
+    return {"stream_id": stream_id, "segments": segments}
 
 
-def _transcribe_stream(model: Any, stream_id: int, video_file: Path, send: Callable[[dict[str, Any]], None], ranges: list[list[float]] | None = None) -> dict[str, Any]:
+def _transcribe_stream(
+    model: Any,
+    video_file: Path,
+    temporary_directory: Path,
+    send: Callable[[dict[str, Any]], None],
+    ranges: list[list[float]] | None = None,
+    keep_audio: bool = False,
+) -> dict[str, Any]:
     # Only these parts are transcribed (e.g. the Creator SMP part of a Twitch VOD). Segment times stay file times;
     # duration and progress count the transcribed parts only.
     spans = transcription_spans(ranges, probe_duration(video_file))
@@ -204,50 +223,87 @@ def _transcribe_stream(model: Any, stream_id: int, video_file: Path, send: Calla
     send({"type": "duration", "duration_seconds": duration})
     send({"type": "stage", "stage": "extracting_audio"})
 
-    with tempfile.TemporaryDirectory(prefix=f"creatorsmp4-{stream_id}-") as temporary_directory:
-        result_segments = []
-        done = 0.0  # transcribed seconds of the spans before the current one
-        for span_start, span_end in spans:
-            chunk_start = span_start
-            while chunk_start < span_end:
-                chunk_duration = min(WHISPER_CHUNK_SECONDS, span_end - chunk_start)
-                audio_file = Path(temporary_directory) / f"audio-{int(chunk_start)}.wav"
-                chunk_done = done + chunk_start - span_start
-                last_progress = -1
+    result_segments = []
+    audio_parts: list[tuple[Path, float]] = []  # the kept chunks, back to back: the audio time line diarization sees
+    done = 0.0  # transcribed seconds of the spans before the current one
+    for span_start, span_end in spans:
+        chunk_start = span_start
+        while chunk_start < span_end:
+            chunk_duration = min(WHISPER_CHUNK_SECONDS, span_end - chunk_start)
+            audio_file = temporary_directory / f"audio-{int(chunk_start)}.wav"
+            chunk_done = done + chunk_start - span_start
+            last_progress = -1
 
-                def extraction_progress(processed: float) -> None:
-                    nonlocal last_progress
-                    global_processed = chunk_done + min(chunk_duration, max(0.0, processed))
-                    progress = progress_for(global_processed, duration)
-                    if progress != last_progress:
-                        last_progress = progress
-                        send({"type": "progress", "stage": "extracting_audio", "processed_seconds": global_processed, "progress": progress, "segment_count": len(result_segments)})
+            def extraction_progress(processed: float) -> None:
+                nonlocal last_progress
+                global_processed = chunk_done + min(chunk_duration, max(0.0, processed))
+                progress = progress_for(global_processed, duration)
+                if progress != last_progress:
+                    last_progress = progress
+                    send({"type": "progress", "stage": "extracting_audio", "processed_seconds": global_processed, "progress": progress, "segment_count": len(result_segments)})
 
-                extract_audio(video_file, audio_file, extraction_progress, chunk_duration, chunk_start)
-                send({"type": "stage", "stage": "transcribing", "processed_seconds": chunk_done, "progress": progress_for(chunk_done, duration), "segment_count": len(result_segments)})
-                try:
-                    segments, _info = model.transcribe(str(audio_file), language=LANGUAGE, vad_filter=True)
-                    for segment in segments:
-                        text = segment.text.strip()
-                        if not text:
-                            continue
-                        item = {
-                            "start": chunk_start + float(segment.start),
-                            "end": chunk_start + float(segment.end),
-                            "text": text,
-                        }
-                        result_segments.append(item)
-                        send({"type": "segment", **item})
-                        processed = min(duration, chunk_done + float(segment.end))
-                        send({"type": "progress", "stage": "transcribing", "processed_seconds": processed, "progress": progress_for(processed, duration), "segment_count": len(result_segments)})
-                except Exception as exc:
-                    raise ProcessingError(f"Whisper mislukt: {exc}") from exc
+            extract_audio(video_file, audio_file, extraction_progress, chunk_duration, chunk_start)
+            send({"type": "stage", "stage": "transcribing", "processed_seconds": chunk_done, "progress": progress_for(chunk_done, duration), "segment_count": len(result_segments)})
+            try:
+                segments, _info = model.transcribe(str(audio_file), language=LANGUAGE, vad_filter=True)
+                for segment in segments:
+                    text = segment.text.strip()
+                    if not text:
+                        continue
+                    item = {
+                        "start": chunk_start + float(segment.start),
+                        "end": chunk_start + float(segment.end),
+                        "text": text,
+                    }
+                    send({"type": "segment", **item})
+                    # Where the segment is in the kept audio (chunk_done is where this chunk starts there).
+                    result_segments.append({**item, "_audio_start": chunk_done + float(segment.start), "_audio_end": chunk_done + float(segment.end)})
+                    processed = min(duration, chunk_done + float(segment.end))
+                    send({"type": "progress", "stage": "transcribing", "processed_seconds": processed, "progress": progress_for(processed, duration), "segment_count": len(result_segments)})
+            except Exception as exc:
+                raise ProcessingError(f"Whisper mislukt: {exc}") from exc
+            if keep_audio:
+                audio_parts.append((audio_file, chunk_duration))
+            else:
                 audio_file.unlink(missing_ok=True)
-                chunk_start += chunk_duration
-            done += span_end - span_start
+            chunk_start += chunk_duration
+        done += span_end - span_start
 
-    send({"type": "completed", "stage": "completed", "processed_seconds": duration, "progress": 100, "segment_count": len(result_segments)})
-    return {"stream_id": stream_id, "segments": result_segments}
+    return {"segments": result_segments, "duration": duration, "audio_parts": audio_parts}
+
+
+def add_speakers(transcript: dict[str, Any], send: Callable[[dict[str, Any]], None]) -> None:
+    """Diarizes the kept audio and gives every segment a speaker; sends them as a `speakers` event.
+
+    A failure here keeps the transcript: it is sent without speakers, with a warning.
+    """
+    duration = transcript["duration"]
+    segments = transcript["segments"]
+    send({"type": "stage", "stage": "diarizing", "processed_seconds": 0, "progress": 0, "segment_count": len(segments)})
+    last_progress = -1
+
+    def on_progress(fraction: float) -> None:
+        nonlocal last_progress
+        progress = max(0, min(100, round(fraction * 100)))
+        if progress != last_progress:
+            last_progress = progress
+            send({"type": "progress", "stage": "diarizing", "processed_seconds": duration * fraction, "progress": progress, "segment_count": len(segments)})
+
+    try:
+        waveform = diarization.read_audio(transcript["audio_parts"])
+        with MODELS.use("diarization", diarization.load_pipeline, diarization.unload_pipeline) as pipeline:
+            turns, voices = diarization.diarize(pipeline, waveform, on_progress)
+        del waveform
+        speakers, summary = diarization.assign_speakers([(segment["_audio_start"], segment["_audio_end"]) for segment in segments], turns, voices)
+    except Exception as exc:
+        message = f"Sprekerherkenning mislukt: {exc}"
+        print(f"worker: {message}", flush=True)
+        send({"type": "warning", "message": message})
+        return
+    for segment, speaker in zip(segments, speakers):
+        segment["speaker"] = speaker
+    print(f"worker: diarized {len(segments)} segments, {len(summary)} speakers", flush=True)
+    send({"type": "speakers", "segment_speakers": speakers, "speakers": summary})
 
 
 class WorkerRequestHandler(BaseHTTPRequestHandler):
@@ -257,7 +313,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         if self.path != "/health":
             self.send_error(404, "Not found")
             return
-        self.send_json({"status": "ok", "name": registration.worker_name(), "loaded_models": MODELS.loaded_models, "busy": registration.ACTIVE.busy})
+        self.send_json({"status": "ok", "name": registration.worker_name(), "loaded_models": MODELS.loaded_models, "busy": registration.ACTIVE.busy, "diarization": diarization.enabled()})
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path not in {"/transcribe", "/extract-events"}:
@@ -372,6 +428,8 @@ def main() -> None:
     host = os.getenv("WORKER_HOST", "0.0.0.0")
     port = int(os.getenv("WORKER_PORT", "8001"))
     print(f"transcription worker listening on {host}:{port}; model={MODEL_NAME} device={DEVICE}", flush=True)
+    if not diarization.enabled():
+        print("worker: speaker diarization off (no HF_TOKEN or DIARIZATION_MODEL)", flush=True)
     if MODEL_IDLE_SECONDS > 0:
         Thread(target=unload_idle_models, daemon=True).start()
     registration.start(port, lambda: MODELS.loaded)

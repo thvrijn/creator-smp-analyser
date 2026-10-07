@@ -80,6 +80,18 @@ De Tailscale-DNS op de Pi kan voor `*.thomasvrijn.nl` een ander adres geven dan 
 
 **Eerste deploy**: start de workflow (*Actions → CI/CD → Run workflow*), of op de Pi `./scripts/deploy.sh`. De eerste build duurt even; daarna gebruikt Docker zijn cache.
 
+**Account aanmaken**: de app is alleen te zien na inloggen, en er is geen registratiepagina. Maak na de eerste deploy een account aan (vraagt om het wachtwoord; opnieuw draaien met dezelfde gebruikersnaam zet een nieuw wachtwoord):
+
+```bash
+docker compose -f docker-compose.prod.yml exec app php artisan user:create
+```
+
+Of zet het standaard-adminaccount neer (`AdminUserSeeder`: gebruikersnaam `thoompje` met wachtwoord `admin`) en verander het wachtwoord daarna meteen bij Profiel (rechtsboven). Andere accounts maak je als admin aan op de pagina Gebruikers:
+
+```bash
+docker compose -f docker-compose.prod.yml exec app php artisan db:seed --class=AdminUserSeeder --force
+```
+
 Bestaande data van de laptop meenemen kan eenmalig, direct na de eerste deploy:
 
 1. Op de laptop: `docker compose exec -T postgres pg_dump -U creatorsmp4 creatorsmp4 > dump.sql`

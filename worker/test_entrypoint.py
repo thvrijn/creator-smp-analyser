@@ -153,6 +153,53 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(events[0], {"type": "duration", "duration_seconds": 250.0})
         self.assertIn({"type": "progress", "stage": "transcribing", "processed_seconds": 166.87, "progress": 67, "segment_count": 2}, events)
 
+    def transcribe_with_diarization(self, diarize) -> tuple[dict, list[dict]]:
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "stream.mp4").write_bytes(b"video")
+            with patch.object(entrypoint, "STORAGE_ROOT", root), \
+                    patch.object(entrypoint, "probe_duration", return_value=1000.0), \
+                    patch.object(entrypoint, "extract_audio"), \
+                    patch.object(entrypoint, "load_whisper_model", return_value=FakeModel()), \
+                    patch.object(entrypoint.diarization, "enabled", return_value=True), \
+                    patch.object(entrypoint.diarization, "read_audio", return_value=None) as read_audio, \
+                    patch.object(entrypoint.diarization, "load_pipeline", return_value=object()), \
+                    patch.object(entrypoint.diarization, "diarize", side_effect=diarize):
+                result = entrypoint.transcribe_stream(12, "stream.mp4", events.append, [[100, 500]])
+                self.parts = read_audio.call_args.args[0]
+        return result, events
+
+    def test_diarization_gives_every_segment_a_speaker_in_the_kept_audio_time(self) -> None:
+        def diarize(_pipeline, _waveform, on_progress):
+            on_progress(0.5)
+            # Audio time: the second chunk starts at 300 s there (file time 400 s).
+            return [(0.0, 20.0, "STREAMER"), (310.0, 320.0, "SAM")], {"STREAMER": [1.0], "SAM": None}
+
+        result, events = self.transcribe_with_diarization(diarize)
+
+        self.assertEqual([(part[0].name, part[1]) for part in self.parts], [("audio-100.wav", 300.0), ("audio-400.wav", 100.0)])
+        self.assertEqual(result["segments"], [
+            {"start": 112.34, "end": 116.87, "text": "Waar is Lars?", "speaker": 0},
+            {"start": 412.34, "end": 416.87, "text": "Waar is Lars?", "speaker": 1},
+        ])
+        self.assertIn({"type": "progress", "stage": "diarizing", "processed_seconds": 200.0, "progress": 50, "segment_count": 2}, events)
+        self.assertEqual(events[-2], {"type": "speakers", "segment_speakers": [0, 1], "speakers": [
+            {"speaker": 0, "seconds": 20.0, "embedding": [1.0]},
+            {"speaker": 1, "seconds": 10.0, "embedding": None},
+        ]})
+        self.assertEqual(events[-1]["type"], "completed")
+
+    def test_a_failed_diarization_keeps_the_transcript_without_speakers(self) -> None:
+        def diarize(*_args):
+            raise RuntimeError("CUDA out of memory")
+
+        result, events = self.transcribe_with_diarization(diarize)
+
+        self.assertEqual([segment.get("speaker") for segment in result["segments"]], [None, None])
+        self.assertIn({"type": "warning", "message": "Sprekerherkenning mislukt: CUDA out of memory"}, events)
+        self.assertEqual(events[-1]["type"], "completed")
+
     def test_ranges_are_clipped_to_the_file(self) -> None:
         self.assertEqual(entrypoint.transcription_spans(None, 50.0), [(0.0, 50.0)])
         self.assertEqual(entrypoint.transcription_spans([[-5, 10], [40, 90], [60, 70]], 50.0), [(0.0, 10.0), (40.0, 50.0)])

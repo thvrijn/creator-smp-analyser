@@ -2,3 +2,5 @@ faster-whisper>=1.1,<2.0
 # faster-whisper 1.2 passes av.open(metadata_errors=...), which PyAV 18 removed.
 av<18
 mlx-lm>=0.32,<1
+# Speaker diarization (CPU on macOS); same version as in Docker.
+pyannote.audio==3.4.0

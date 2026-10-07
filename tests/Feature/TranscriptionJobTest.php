@@ -237,6 +237,58 @@ class TranscriptionJobTest extends TestCase
         $this->assertSame(0.0, $stream->transcription_eta_seconds);
     }
 
+    public function test_speakers_from_diarization_are_saved_with_the_segments(): void
+    {
+        Storage::fake('local');
+        $stream = $this->createStream('streams/1/video/stream.mp4');
+        Storage::disk('local')->put($stream->video_path, 'video');
+        $body = implode("\n", [
+            json_encode(['type' => 'segment', 'start' => 1, 'end' => 2, 'text' => 'Hoi Sam']),
+            // Dropped here (no text), but it still counts in the worker's segment indexes.
+            json_encode(['type' => 'segment', 'start' => 2, 'end' => 3, 'text' => ' ']),
+            json_encode(['type' => 'segment', 'start' => 3, 'end' => 4, 'text' => 'Hoi!']),
+            json_encode(['type' => 'segment', 'start' => 4, 'end' => 5, 'text' => 'Hmm']),
+            json_encode(['type' => 'stage', 'stage' => 'diarizing']),
+            json_encode(['type' => 'speakers', 'segment_speakers' => [0, 1, 1, null], 'speakers' => [
+                ['speaker' => 0, 'seconds' => 120.5, 'embedding' => [0.1, -0.2]],
+                ['speaker' => 1, 'seconds' => 30, 'embedding' => null],
+            ]]),
+            json_encode(['type' => 'completed', 'stage' => 'completed', 'progress' => 100, 'segment_count' => 4]),
+            '',
+        ]);
+        Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/x-ndjson'])]);
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+
+        $this->assertSame(['Hoi Sam' => 0, 'Hoi!' => 1, 'Hmm' => null], $stream->transcriptSegments()->orderBy('start_time')->pluck('speaker', 'text')->all());
+        // JSON stores 30.0 as 30.
+        $this->assertEquals([
+            ['speaker' => 0, 'seconds' => 120.5, 'embedding' => [0.1, -0.2]],
+            ['speaker' => 1, 'seconds' => 30.0, 'embedding' => null],
+        ], $stream->refresh()->transcription_speakers);
+    }
+
+    public function test_a_transcript_without_diarization_has_no_speakers(): void
+    {
+        Storage::fake('local');
+        $stream = $this->createStream('streams/1/video/stream.mp4');
+        Storage::disk('local')->put($stream->video_path, 'video');
+        $body = implode("\n", [
+            json_encode(['type' => 'segment', 'start' => 1, 'end' => 2, 'text' => 'Hallo']),
+            json_encode(['type' => 'warning', 'message' => 'Sprekerherkenning mislukt: geen GPU']),
+            json_encode(['type' => 'completed', 'stage' => 'completed', 'progress' => 100, 'segment_count' => 1]),
+            '',
+        ]);
+        Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/x-ndjson'])]);
+
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class));
+
+        $stream->refresh();
+        $this->assertSame('completed', $stream->transcription_status);
+        $this->assertNull($stream->transcription_speakers);
+        $this->assertNull($stream->transcriptSegments()->first()->speaker);
+    }
+
     private function createStream(?string $videoPath = null): Stream
     {
         $player = Player::create(['name' => 'Sophie']);

@@ -36,6 +36,7 @@ class Stream extends Model
         'video_download_error',
         'video_offset_seconds',
         'transcription_ranges',
+        'transcription_speakers',
         'transcription_status',
         'transcription_error',
         'transcribed_at',
@@ -48,6 +49,8 @@ class Stream extends Model
         'transcription_eta_seconds',
         'event_extraction_status',
         'event_extraction_error',
+        'event_extraction_chunks_done',
+        'event_extraction_chunks_total',
         'event_extraction_started_at',
         'event_extraction_completed_at',
     ];
@@ -60,6 +63,7 @@ class Stream extends Model
             'video_file_size' => 'integer',
             'video_offset_seconds' => 'float',
             'transcription_ranges' => 'array',
+            'transcription_speakers' => 'array',
             'transcribed_at' => 'datetime',
             'transcription_progress' => 'integer',
             'transcription_processed_seconds' => 'float',
@@ -67,6 +71,8 @@ class Stream extends Model
             'transcription_segment_count' => 'integer',
             'transcription_started_at' => 'datetime',
             'transcription_eta_seconds' => 'float',
+            'event_extraction_chunks_done' => 'integer',
+            'event_extraction_chunks_total' => 'integer',
             'event_extraction_started_at' => 'datetime',
             'event_extraction_completed_at' => 'datetime',
         ];
@@ -110,6 +116,32 @@ class Stream extends Model
     public function clips(): HasMany
     {
         return $this->hasMany(Clip::class);
+    }
+
+    /** Percentage of the analysis' chunks done; null before the job knows how many there are. */
+    public function eventExtractionProgress(): ?int
+    {
+        if (! $this->event_extraction_chunks_total) {
+            return null;
+        }
+
+        return (int) min(100, floor($this->event_extraction_chunks_done / $this->event_extraction_chunks_total * 100));
+    }
+
+    /** Seconds the analysis still needs at its average pace per chunk so far (including the model load). */
+    public function estimatedEventExtractionEta(): ?float
+    {
+        if ($this->event_extraction_status !== 'processing'
+            || $this->event_extraction_started_at === null
+            || ! $this->event_extraction_chunks_total
+            || $this->event_extraction_chunks_done <= 0) {
+            return null;
+        }
+
+        $elapsed = abs((float) now()->diffInSeconds($this->event_extraction_started_at));
+        $remaining = max(0, $this->event_extraction_chunks_total - $this->event_extraction_chunks_done);
+
+        return round($elapsed / $this->event_extraction_chunks_done * $remaining);
     }
 
     public function estimatedTranscriptionEta(): ?float
