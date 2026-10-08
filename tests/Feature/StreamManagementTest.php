@@ -45,6 +45,35 @@ class StreamManagementTest extends TestCase
                 ->has('players', 1));
     }
 
+    public function test_the_twitch_link_points_to_the_channel_while_live_and_to_the_vod_afterwards(): void
+    {
+        $player = Player::create(['name' => 'Sophie', 'twitch_login' => 'sophie_smp']);
+        $live = Stream::create([
+            'player_id' => $player->id,
+            'title' => 'Live SMP',
+            'started_at' => '2026-10-04 19:00:00+00',
+            'ended_at' => null,
+            'source' => 'twitch',
+            'twitch_video_id' => '111',
+        ]);
+        $finished = Stream::create([
+            'player_id' => $player->id,
+            'title' => 'Evening SMP',
+            'started_at' => '2026-10-03 19:00:00+00',
+            'ended_at' => '2026-10-03 20:00:00+00',
+            'source' => 'twitch',
+            'twitch_video_id' => '222',
+        ]);
+
+        $this->get('/streams')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('streams.0.id', $live->id)
+                ->where('streams.0.twitch_url', 'https://www.twitch.tv/sophie_smp')
+                ->where('streams.1.id', $finished->id)
+                ->where('streams.1.twitch_url', 'https://www.twitch.tv/videos/222'));
+    }
+
     public function test_a_stream_can_be_created(): void
     {
         $player = Player::create(['name' => 'Lars']);

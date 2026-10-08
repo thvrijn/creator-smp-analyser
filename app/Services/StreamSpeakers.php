@@ -15,15 +15,16 @@ use Illuminate\Support\Facades\DB;
  */
 class StreamSpeakers
 {
-    public function __construct(private readonly VoiceProfiles $voices) {}
+    public function __construct(private readonly VoiceProfiles $voices, private readonly SpeakerTextMatches $texts) {}
 
     /**
      * Every speaker in the stream, with its name, speaking time and segment count, ordered by number.
      *
-     * source: named (a player or free name given by hand), unknown (set to unknown by hand), matched (recognised by
-     * voice, with its similarity), or default (speaker 0 = the streamer, others "Spreker n").
+     * source: named (a player or free name given by hand), unknown (set to unknown by hand), matched (recognised: by
+     * text, saying the same sentences as that player in their stream, or else by voice, with its similarity), or
+     * default (speaker 0 = the streamer, others "Spreker n").
      *
-     * @return list<array{speaker: int, name: string, source: string, named: bool, player_id: ?int, label: ?string, similarity: ?float, seconds: float, segment_count: int}>
+     * @return list<array{speaker: int, name: string, source: string, named: bool, player_id: ?int, label: ?string, matched_by: ?string, similarity: ?float, text_hits: ?int, text_stream_id: ?int, seconds: float, segment_count: int}>
      */
     public function list(Stream $stream): array
     {
@@ -34,7 +35,7 @@ class StreamSpeakers
             ->get()
             ->keyBy('speaker');
         $names = $stream->speakerNames()->with('player:id,name')->get()->keyBy('speaker');
-        $matches = $this->voices->matches($stream);
+        $matches = $this->recognised($stream);
         $matchedPlayers = Player::query()->whereKey(array_column($matches, 'player_id'))->pluck('name', 'id');
         $numbers = $stats->keys()->merge($names->keys())->unique()->sort()->values();
 
@@ -56,11 +57,50 @@ class StreamSpeakers
                 'named' => $name !== null,
                 'player_id' => $name?->player_id ?? ($source === 'matched' ? $match['player_id'] : null),
                 'label' => $name?->label,
-                'similarity' => $source === 'matched' ? $match['similarity'] : null,
+                'matched_by' => $source === 'matched' ? $match['by'] : null,
+                'similarity' => $source === 'matched' ? ($match['similarity'] ?? null) : null,
+                'text_hits' => $source === 'matched' ? ($match['hits'] ?? null) : null,
+                'text_stream_id' => $source === 'matched' ? ($match['stream_id'] ?? null) : null,
                 'seconds' => round((float) ($stats->get($speaker)?->seconds ?? 0), 1),
                 'segment_count' => (int) ($stats->get($speaker)?->segment_count ?? 0),
             ];
         })->all();
+    }
+
+    /**
+     * The player behind each speaker that is known as one: named after a player by hand, recognised by voice, or
+     * speaker 0 as the streamer while nobody named it otherwise.
+     *
+     * @return array<int, int> player id per speaker number
+     */
+    public function players(Stream $stream): array
+    {
+        $names = $stream->speakerNames()->get()->keyBy('speaker');
+        $players = array_map(fn (array $match) => $match['player_id'], $this->recognised($stream));
+        if (! $names->has(0)) {
+            $players[0] = $stream->player_id;
+        }
+        foreach ($names as $speaker => $name) {
+            if ($name->player_id !== null) {
+                $players[$speaker] = $name->player_id;
+            }
+        }
+
+        return $players;
+    }
+
+    /**
+     * Unnamed speakers recognised as a player: by text first (they say the same sentences as that player in their own
+     * stream, the stronger evidence), then by voice for the rest.
+     *
+     * @return array<int, array{player_id: int, by: string, similarity?: float, hits?: int, compared?: int, stream_id?: int}> per speaker number
+     */
+    public function recognised(Stream $stream): array
+    {
+        $byText = array_map(fn (array $match) => [...$match, 'by' => 'text'], $this->texts->matches($stream));
+        $byVoice = array_map(fn (array $match) => [...$match, 'by' => 'voice'], $this->voices->matches($stream, array_map(fn (array $match) => $match['player_id'], $byText)));
+
+        return $byText + $byVoice;
     }
 
     public function defaultName(Stream $stream, int $speaker): string

@@ -65,7 +65,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); window.clearInterval(do
                 <span v-else class="video-indicator video-missing">— Geen video</span>
                 <p v-if="stream.video_download_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.video_download_error && !stream.video_path" class="stream-error">{{ stream.video_download_error }}</p>
-                <div v-if="stream.twitch_video_id"><a class="twitch-link" :href="'https://www.twitch.tv/videos/' + stream.twitch_video_id" target="_blank" rel="noopener noreferrer">Bekijk op Twitch ↗</a></div>
+                <div v-if="stream.twitch_url"><a class="twitch-link" :href="stream.twitch_url" target="_blank" rel="noopener noreferrer">{{ stream.ended_at ? 'Bekijk op Twitch ↗' : 'Kijk live op Twitch ↗' }}</a></div>
             </td>
             <td><div class="transcription-details">
                 <span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ transcriptionLabel(stream.transcription_status) }}</span>

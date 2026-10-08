@@ -187,6 +187,11 @@ class TranscribeStreamJob implements ShouldQueue
                 'transcription_speakers' => $speakers,
             ])->save();
         });
+
+        // Recognise speakers by what they say in other streams that were live at the same time.
+        if ($speakers !== null) {
+            MatchSpeakerTextJob::dispatch($stream->id);
+        }
     }
 
     /**

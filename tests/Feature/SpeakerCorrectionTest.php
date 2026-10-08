@@ -56,7 +56,7 @@ class SpeakerCorrectionTest extends TestCase
     public function test_the_stream_page_lists_the_speakers_with_default_names(): void
     {
         $this->get("/streams/{$this->stream->id}")->assertInertia(fn (Assert $page) => $page
-            ->where('speakers.0', ['speaker' => 0, 'name' => 'Duncan', 'source' => 'default', 'named' => false, 'player_id' => null, 'label' => null, 'similarity' => null, 'seconds' => 30, 'segment_count' => 1])
+            ->where('speakers.0', ['speaker' => 0, 'name' => 'Duncan', 'source' => 'default', 'named' => false, 'player_id' => null, 'label' => null, 'matched_by' => null, 'similarity' => null, 'text_hits' => null, 'text_stream_id' => null, 'seconds' => 30, 'segment_count' => 1])
             ->where('speakers.1.name', 'Spreker 1')
             ->has('players', 2));
     }

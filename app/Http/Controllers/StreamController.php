@@ -9,6 +9,7 @@ use App\Jobs\TranscribeStreamJob;
 use App\Models\Event;
 use App\Models\Player;
 use App\Models\Stream;
+use App\Services\SharedMoments;
 use App\Services\StreamJobCanceller;
 use App\Services\StreamSpeakers;
 use Illuminate\Http\JsonResponse;
@@ -25,7 +26,7 @@ class StreamController extends Controller
 {
     public function index(): Response
     {
-        $streams = Stream::query()->with(['player:id,name,photo_path,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
+        $streams = Stream::query()->with(['player:id,name,photo_path,twitch_login,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
 
         return Inertia::render('Streams/Index', [
             'streams' => StreamResource::collection($streams)->resolve(),
@@ -205,7 +206,7 @@ class StreamController extends Controller
 
     public function show(Request $request, Stream $stream): Response
     {
-        $stream->load('player:id,name,photo_path,updated_at')->loadCount('transcriptSegments');
+        $stream->load('player:id,name,photo_path,twitch_login,updated_at')->loadCount('transcriptSegments');
         $search = trim((string) $request->query('search', ''));
         $search = $search !== '' ? mb_substr($search, 0, 100) : null;
 
@@ -218,10 +219,15 @@ class StreamController extends Controller
             $segmentsQuery->where('text', 'ilike', '%'.$search.'%');
         }
 
-        // Selecting an event opens the (unfiltered) transcript page that contains its first segment.
+        // Selecting an event opens the (unfiltered) transcript page that contains its first segment. ?at= (seconds in
+        // the media file, from a moment linked in another stream) does the same for the segment playing at that time.
         $page = $request->integer('page', 1);
         $highlighted = $selectedEvent?->transcriptSegments->pluck('id')->sort()->values()->all() ?? [];
-        if ($selectedEvent !== null && $search === null && $highlighted !== [] && ! $request->has('page')) {
+        if ($selectedEvent === null && $request->filled('at') && is_numeric($request->query('at'))) {
+            $atSegment = $stream->transcriptSegments()->where('end_time', '>', (float) $request->query('at'))->orderBy('start_time')->orderBy('id')->first();
+            $highlighted = $atSegment !== null ? [$atSegment->id] : [];
+        }
+        if ($search === null && $highlighted !== [] && ! $request->has('page')) {
             $first = $stream->transcriptSegments()->whereKey($highlighted)->orderBy('start_time')->orderBy('id')->first();
             $before = $stream->transcriptSegments()
                 ->where(fn ($query) => $query->where('start_time', '<', $first->start_time)
@@ -252,6 +258,8 @@ class StreamController extends Controller
                 'confidence' => (float) $event->confidence,
                 'segment_count' => $event->transcriptSegments->count(),
             ])->values()->all(),
+            // Per event: the same moment in other players' streams.
+            'shared_moments' => (object) app(SharedMoments::class)->forStream($stream),
             'clips' => $stream->clips()->orderBy('start_seconds')->orderBy('id')->get()->map->payload()->values()->all(),
             'selected_event_id' => $selectedEvent?->id,
             'highlighted_segment_ids' => $highlighted,

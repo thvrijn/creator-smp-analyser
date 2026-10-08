@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Player;
+use App\Models\SpeakerTextMatch;
 use App\Models\Stream;
 use App\Models\StreamSpeaker;
 use Illuminate\Support\Facades\Cache;
@@ -10,7 +11,8 @@ use Illuminate\Support\Facades\Cache;
 /**
  * Recognises speakers across streams (diarization step 2). Every player gets a voice profile: the average of the
  * voice embeddings that are known to be theirs. Those are the speakers named after them by hand (confirmed), and
- * speaker 0 of their own streams while nobody named it otherwise (it speaks the most, almost always the streamer).
+ * speaker 0 of their own streams while nobody named it otherwise (it speaks the most, almost always the streamer), and
+ * speakers recognised by saying the same sentences as that player in their own stream (SpeakerTextMatches).
  * A speaker without a name in another stream is shown as the player whose profile its voice is closest to, when that
  * is close enough (services.voices) and clearly closer than the next player. Naming it by hand confirms or corrects it.
  *
@@ -18,6 +20,8 @@ use Illuminate\Support\Facades\Cache;
  */
 class VoiceProfiles
 {
+    public function __construct(private readonly SpeakerTextMatches $texts) {}
+
     private const CACHE_KEY = 'voice-profiles:v1';
 
     public static function forget(): void
@@ -43,14 +47,15 @@ class VoiceProfiles
      * The best-matching player for each unnamed speaker of the stream (not speaker 0, which defaults to the streamer).
      * Each player is used once per stream, so two voices never get the same name.
      *
+     * @param  array<int, int>  $decided  speakers already recognised otherwise (by text): player id per speaker number
      * @return array<int, array{player_id: int, similarity: float}> per speaker number
      */
-    public function matches(Stream $stream): array
+    public function matches(Stream $stream, array $decided = []): array
     {
         $profiles = $this->profiles();
         $names = $stream->speakerNames()->get()->keyBy('speaker');
-        // Players already in this stream: named by hand, or the streamer as the default speaker 0.
-        $taken = $names->pluck('player_id')->filter()->all();
+        // Players already in this stream: named by hand, recognised by text, or the streamer as the default speaker 0.
+        $taken = [...$names->pluck('player_id')->filter()->all(), ...array_values($decided)];
         if (! $names->has(0)) {
             $taken[] = $stream->player_id;
         }
@@ -58,7 +63,7 @@ class VoiceProfiles
         $candidates = [];
         foreach ($stream->transcription_speakers ?? [] as $voice) {
             $speaker = $voice['speaker'];
-            if ($speaker === 0 || $names->has($speaker) || ! $this->usable($voice)) {
+            if ($speaker === 0 || $names->has($speaker) || isset($decided[$speaker]) || ! $this->usable($voice)) {
                 continue;
             }
             $embedding = self::normalise($voice['embedding']);
@@ -86,6 +91,7 @@ class VoiceProfiles
 
     /**
      * Every voice known to belong to a player: [player id, normalised embedding, stream id, confirmed by hand].
+     * A speaker recognised by text counts too (not as confirmed by hand).
      *
      * @return \Generator<int, array{0: int, 1: list<float>, 2: int, 3: bool}>
      */
@@ -93,16 +99,18 @@ class VoiceProfiles
     {
         $players = Player::query()->pluck('id')->flip();
         $names = StreamSpeaker::query()->get()->groupBy('stream_id');
+        $textRows = SpeakerTextMatch::query()->get()->groupBy('stream_id');
         $streams = Stream::query()->whereNotNull('transcription_speakers')->select(['id', 'player_id', 'transcription_speakers'])->lazyById(50);
 
         foreach ($streams as $stream) {
             $streamNames = ($names->get($stream->id) ?? collect())->keyBy('speaker');
+            $byText = $textRows->has($stream->id) ? $this->texts->matches($stream, $textRows->get($stream->id), $streamNames) : [];
             foreach ($stream->transcription_speakers as $voice) {
                 if (! $this->usable($voice)) {
                     continue;
                 }
                 $name = $streamNames->get($voice['speaker']);
-                $playerId = $name !== null ? $name->player_id : ($voice['speaker'] === 0 ? $stream->player_id : null);
+                $playerId = $name !== null ? $name->player_id : ($byText[$voice['speaker']]['player_id'] ?? ($voice['speaker'] === 0 ? $stream->player_id : null));
                 if ($playerId !== null && $players->has($playerId)) {
                     yield [$playerId, self::normalise($voice['embedding']), $stream->id, $name !== null];
                 }

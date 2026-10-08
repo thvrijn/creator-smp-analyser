@@ -12,7 +12,7 @@ import diarization
 
 
 def main() -> None:
-    whisper_model = os.getenv("WHISPER_MODEL", "small")
+    whisper_model = os.getenv("WHISPER_MODEL", "large-v3-turbo")
     whisper_cache = os.getenv("WHISPER_MODEL_CACHE", "/worker/.cache")
     event_model = os.getenv("EVENT_MODEL", "unsloth/Qwen3-8B-bnb-4bit")
 

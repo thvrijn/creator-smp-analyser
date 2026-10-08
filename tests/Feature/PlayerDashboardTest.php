@@ -50,6 +50,22 @@ class PlayerDashboardTest extends TestCase
             ->where('players.1.last_stream_at', null));
     }
 
+    public function test_dashboard_lists_the_streams_being_downloaded_transcribed_or_analysed_running_first(): void
+    {
+        $alex = Player::create(['name' => 'Alex']);
+        $queued = $this->createStream($alex, ['event_extraction_status' => 'queued', 'transcription_status' => 'completed', 'started_at' => '2026-10-01 19:00:00+00']);
+        $running = $this->createStream($alex, ['transcription_status' => 'processing', 'started_at' => '2026-10-02 19:00:00+00']);
+        $download = $this->createStream($alex, ['video_download_status' => 'queued', 'started_at' => '2026-10-03 19:00:00+00']);
+        $this->createStream($alex, ['transcription_status' => 'completed', 'event_extraction_status' => 'completed', 'started_at' => '2026-10-04 19:00:00+00']);
+
+        $this->get('/dashboard')->assertOk()->assertInertia(fn (Assert $page) => $page
+            ->has('active_streams', 3)
+            ->where('active_streams.0.id', $running->id)
+            ->where('active_streams.0.player.name', 'Alex')
+            ->where('active_streams', fn ($streams) => collect($streams)->pluck('id')->sort()->values()->all() === collect([$queued->id, $running->id, $download->id])->sort()->values()->all())
+            ->where('players.0.active_streams_count', 3));
+    }
+
     public function test_player_page_lists_only_that_players_streams(): void
     {
         $alex = Player::create(['name' => 'Alex']);

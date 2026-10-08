@@ -6,6 +6,7 @@ use App\Http\Requests\StorePlayerRequest;
 use App\Http\Requests\UpdatePlayerRequest;
 use App\Http\Resources\StreamResource;
 use App\Models\Player;
+use App\Models\Stream;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
@@ -36,15 +37,25 @@ class PlayerController extends Controller
 
     public function dashboard(): Response
     {
+        $active = Stream::query()->active()
+            ->with(['player:id,name,photo_path,twitch_login,updated_at', 'activeWorker:id,name,current_stream_id'])
+            ->withCount('transcriptSegments')
+            ->get()
+            // Running first, then waiting for a worker, then the queue; the longest-running first within each.
+            ->sortBy(fn (Stream $stream) => [$this->activityRank($stream), $stream->updated_at?->timestamp])
+            ->values();
+
         return Inertia::render('Dashboard', [
             'players' => Player::query()->withStreamStats()->orderByName()->get()->map->statsPayload()->values(),
+            // What is being downloaded, transcribed or analysed right now; the page polls this prop.
+            'active_streams' => StreamResource::collection($active)->resolve(),
         ]);
     }
 
     public function show(Player $player): Response
     {
         $player = Player::query()->withStreamStats()->findOrFail($player->id);
-        $streams = $player->streams()->with(['player:id,name,photo_path,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
+        $streams = $player->streams()->with(['player:id,name,photo_path,twitch_login,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
 
         return Inertia::render('Players/Show', [
             'player' => $player->statsPayload(),
@@ -106,5 +117,16 @@ class PlayerController extends Controller
         }
 
         return redirect()->route('players.index')->with('success', 'Speler verwijderd.');
+    }
+
+    private function activityRank(Stream $stream): int
+    {
+        $statuses = [$stream->transcription_status, $stream->event_extraction_status, $stream->video_download_status];
+
+        return match (true) {
+            in_array('processing', $statuses, true) => 0,
+            in_array('waiting', $statuses, true) => 1,
+            default => 2,
+        };
     }
 }

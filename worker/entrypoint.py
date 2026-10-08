@@ -18,7 +18,7 @@ from event_extractor import EventExtractor
 from model_manager import ModelManager
 
 STORAGE_ROOT = Path(os.getenv("WORKER_STORAGE_ROOT", "/var/www/html/storage/app/private")).resolve()
-MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
+MODEL_NAME = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 LANGUAGE = os.getenv("WHISPER_LANGUAGE", "nl") or None
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")

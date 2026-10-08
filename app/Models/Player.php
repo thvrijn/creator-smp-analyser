@@ -55,9 +55,7 @@ class Player extends Model
             ->withCount([
                 'streams',
                 'streams as transcribed_streams_count' => fn (Builder $streams) => $streams->where('transcription_status', 'completed'),
-                'streams as active_streams_count' => fn (Builder $streams) => $streams->where(fn (Builder $active) => $active
-                    ->whereIn('transcription_status', ['queued', 'waiting', 'processing'])
-                    ->orWhereIn('event_extraction_status', ['queued', 'waiting', 'processing'])),
+                'streams as active_streams_count' => fn (Builder $streams) => $streams->active(),
                 'events',
             ])
             ->withMax('streams', 'started_at');

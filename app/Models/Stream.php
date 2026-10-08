@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Services\VoiceProfiles;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -103,6 +104,18 @@ class Stream extends Model
      */
     public const STARTABLE_STATUSES = ['queued', 'waiting', 'failed'];
 
+    /** Statuses of a job that is in the queue, waiting for a worker or running. */
+    public const ACTIVE_STATUSES = ['queued', 'waiting', 'processing'];
+
+    /** Streams with a transcription, analysis or audio download in the queue, waiting or running. */
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $active) => $active
+            ->whereIn('transcription_status', self::ACTIVE_STATUSES)
+            ->orWhereIn('event_extraction_status', self::ACTIVE_STATUSES)
+            ->orWhereIn('video_download_status', self::ACTIVE_STATUSES));
+    }
+
     /**
      * Whether the job behind this status column is on "processing" or "waiting" (for a worker) but no longer running,
      * so it may be started again. A waiting job touches the stream on every check for a free worker.
@@ -118,6 +131,12 @@ class Stream extends Model
     public function activeWorker(): HasOne
     {
         return $this->hasOne(Worker::class, 'current_stream_id');
+    }
+
+    /** Speakers of this stream recognised by saying the same sentences as another stream's streamer. */
+    public function speakerTextMatches(): HasMany
+    {
+        return $this->hasMany(SpeakerTextMatch::class);
     }
 
     /** Names given by hand to this stream's diarized speakers. */

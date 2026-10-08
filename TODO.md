@@ -23,7 +23,13 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 - [ ] Het praten met de chat vóór de gameplay overslaan bij transcriptie of analyse. Daarvoor moet bekend zijn wanneer de speler zelf joinde, en creatorsmp.nl geeft alleen wanneer iemand vertrok en hoe lang hij speelde. Optie: OCR van "<speler> joined the game" in de eigen POV, of zelf een startpunt per stream zetten.
 - [ ] Knop om alle VOD's van een speler in één keer audio te laten ophalen
 - [ ] Deaths van creatorsmp.nl ophalen voor de tijdlijn (`/api/events/{id}/deaths`: exacte tijd en bericht, geen OCR nodig)
-- [ ] Timeline-pagina bouwen (nu placeholder)
+- [ ] Tijdlijn-pagina bouwen (nu placeholder), zoals in een video-editor (DaVinci Resolve): streams kiezen, elke stream is een spoor onder elkaar, precies uitgelijnd op servertijd (`started_at` + `video_offset_seconds` + filetijd, zoals `SharedMoments`). Eén afspeelkop over alle sporen, zodat je op elk moment ziet wat er in elke stream gebeurt.
+  - Per spoor: waar de stream live was, waar het SMP-deel/transcript is (`transcription_ranges`), events als blokjes, clips, "Zelfde moment"-koppelingen als lijnen tussen sporen, en wie er praat (sprekers als gekleurde stukjes, herkende spelers met naam).
+  - Inzoomen van een hele dag naar seconden; klikken op een event springt de afspeelkop erheen.
+  - Audio: we hebben de audio van elk spoor, dus afspelen kan meteen; dempen/solo per spoor (zoals in een editor) om naar één POV te luisteren.
+  - Video zonder iets te downloaden: per gekozen spoor de ingesloten Twitch-player (`TwitchPlayer.vue`, staat al bij Clips) op VOD-tijd = afspeelkop − `started_at`, en die laten meelopen met de afspeelkop (seek bij scrubben, af en toe bijsturen bij drift). Bijv. een raster van 2-4 POV's tegelijk, één met geluid. Werkt alleen zolang de VOD bestaat (Partners 60 dagen, anderen korter).
+  - Later, voor echt beeld zonder Twitch: alleen de gekozen stukken in lage resolutie of 1080p ophalen (zie het clip-downloadpunt), of per stream een thumbnail-strip (één frame per minuut) als filmstrip in het spoor.
+  - Export van de selectie als FCPXML/EDL voor DaVinci Resolve, met de sporen al op tijd uitgelijnd (sluit aan op het videobouwer-punt).
 - [ ] Video builder verder bouwen: clips staan er al op servertijd. Volgende stappen: downloaden en exporteren naar een montageprogramma (FCPXML voor DaVinci Resolve/Premiere).
 - [ ] Settings-pagina bouwen (nu placeholder)
 - [ ] Knop op de Settings-pagina: "Ongebruikte video's opruimen"
@@ -54,6 +60,12 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 -
 
 ## Klaar
+
+- [x] Sprekers herkennen aan wat ze zeggen: zegt een spreker op hetzelfde moment dezelfde zinnen als de streamer van een andere stream, dan is het die speler. Gaat vóór stemherkenning, werkt ook als de stem via Discord anders klinkt, en zo herkende stemmen verbeteren het stemprofiel. Draait vanzelf na elke transcriptie; voor oude streams `php artisan speakers:match-text`. Nog te testen op een echt paar (47 + 51).
+- [x] Dashboard toont bovenaan "Nu bezig": welke streams nu audio ophalen, transcriberen of analyseren (of in de wachtrij staan), met voortgang, resterende tijd, worker en annuleren. Werkt zichzelf elke 3 seconden bij.
+- [x] Whisper-model van `small` naar `large-v3-turbo`: op 10 min van stream 47 sneller (37 s i.p.v. 84 s), 13% meer woorden, geen verzonnen herhalingen, en kortere zinnen per spreekbeurt (beter voor sprekerherkenning).
+- [x] Hetzelfde moment in andere streams: onder een event staat "Zelfde moment bij" met de spelers die erbij waren (hun stem in het event, bij naam genoemd, of andersom). De link opent hun event op dat moment, of hun transcript op die tijd. Nog te beoordelen op echte streams met ontmoetingen.
+- [x] "Bekijk op Twitch" opent bij een live stream het kanaal in plaats van de VOD.
 
 - [x] Sprekerherkenning stap 2: een spreker in een andere stream wordt aan zijn stem herkend als speler (stemprofiel per speler uit hun eigen streams en sprekers die je benoemde). Herkend staat er met een vraagteken; "✓ Klopt" bevestigt het en maakt het profiel beter.
 

@@ -51,6 +51,7 @@ export type Stream = {
     // Bytes; null for streams stored before the size was saved.
     video_file_size: number | null;
     twitch_video_id: string | null;
+    twitch_url: string | null;
     video_download_status: 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
     video_download_progress: number;
     video_download_error: string | null;

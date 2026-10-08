@@ -219,6 +219,7 @@ a.stream-title:hover { color: #fff; text-decoration: underline; text-decoration-
 
 /* Clips: chosen moments for the video, on the stream page and in the video builder. */
 .event-entry { position: relative; flex: none; }
+.event-main { position: relative; }
 .event-actions { position: absolute; right: 12px; bottom: 10px; display: flex; gap: 6px; }
 .event-clip-button { border: 1px solid #333347; border-radius: 6px; background: #1e1e2a; padding: 4px 9px; color: #afafbc; cursor: pointer; font: 600 10px 'Montserrat', sans-serif; text-decoration: none; }
 .event-clip-button:hover { border-color: #e8a011; color: #f5c35a; }
@@ -336,3 +337,27 @@ button.segment-speaker:hover { text-decoration: underline; text-underline-offset
 @media (max-width: 900px) { .speaker-merge { margin-left: 0; padding-left: 0; border-left: 0; } }
 .speaker-chip.speaker-matched { border-style: dashed; }
 button.segment-speaker.speaker-matched { font-style: italic; }
+
+/* The same moment in other players' streams (SharedMoments), under an event. */
+.event-moments { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 4px 0; }
+.event-moment { display: inline-flex; max-width: 100%; align-items: center; gap: 6px; border: 1px solid #9146ff4d; border-radius: 999px; background: #9146ff17; padding: 3px 10px 3px 3px; color: #c7a8ff; font-size: 11px; text-decoration: none; transition: border-color .15s ease, background .15s ease; }
+.event-moment:hover { border-color: #9146ff; background: #9146ff29; }
+.event-moment strong { color: #e3d6ff; font-weight: 600; white-space: nowrap; }
+.event-moment span:last-child { overflow: hidden; color: #a99bc7; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Dashboard "Nu bezig": streams with a download, transcription or analysis in the queue or running. */
+.active-jobs { margin-bottom: 26px; }
+.active-jobs-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.active-job { display: flex; flex-direction: column; gap: 12px; border: 1px solid #282837; border-radius: 10px; background: #1a1a24; padding: 14px; }
+.active-job-stream { display: flex; align-items: center; gap: 10px; min-width: 0; color: inherit; text-decoration: none; }
+.active-job-stream > span:last-child { display: flex; min-width: 0; flex-direction: column; }
+.active-job-stream strong { color: #ebebef; font-size: 13px; }
+.active-job-stream span span { overflow: hidden; color: #8f8fa3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.active-job-stream:hover strong { color: #f5c35a; }
+.active-job-task { border-top: 1px solid #252533; padding-top: 10px; }
+.active-job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.active-job-label { color: #c1c1cc; font-size: 11px; font-weight: 600; }
+.active-job-percent { color: #f0b744; font: 600 11px 'Space Grotesk', sans-serif; }
+.active-job-head .cancel-link { margin-left: auto; }
+.active-job-progress { width: 100%; }
+.speaker-evidence { align-self: center; font-size: 11px; }

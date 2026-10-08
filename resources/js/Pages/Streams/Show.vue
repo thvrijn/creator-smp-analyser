@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import FlashMessages from '../../Components/FlashMessages.vue';
 import AudioPlayer from '../../Components/AudioPlayer.vue';
 import TwitchPlayer from '../../Components/TwitchPlayer.vue';
+import PlayerAvatar from '../../Components/PlayerAvatar.vue';
 import { streamDurationLabel, cancelTask, canCancel, isCancelling, downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel , type CancellableTask } from '../../composables/streamStatus';
 import AppLayout from '../../Layouts/AppLayout.vue';
 import { formatDate, type Stream } from '../../types/streams';
@@ -13,11 +14,14 @@ type StreamEvent = { id: number; type: string; title: string; description: strin
 type Segment = { id: number; start_time: number; end_time: number; text: string; speaker: number | null };
 type PaginationLink = { url: string | null; label: string; active: boolean };
 type Clip = { id: number; event_id: number | null; title: string; start_seconds: number; end_seconds: number };
-// source: named/unknown by hand, matched by voice (VoiceProfiles, with its similarity), or default (0 = the streamer).
-type Speaker = { speaker: number; name: string; source: 'named' | 'unknown' | 'matched' | 'default'; named: boolean; player_id: number | null; label: string | null; similarity: number | null; seconds: number; segment_count: number };
+// source: named/unknown by hand, matched (by text: the same sentences as that player in their own stream, see
+// SpeakerTextMatches; or by voice, VoiceProfiles, with its similarity), or default (0 = the streamer).
+type Speaker = { speaker: number; name: string; source: 'named' | 'unknown' | 'matched' | 'default'; named: boolean; player_id: number | null; label: string | null; matched_by: 'text' | 'voice' | null; similarity: number | null; text_hits: number | null; text_stream_id: number | null; seconds: number; segment_count: number };
+// The same moment in another player's stream (SharedMoments): their event at that time, or else the time in their file.
+type SharedMoment = { stream_id: number; stream_title: string; player: { id: number; name: string; photo_url: string | null }; event_id: number | null; event_title: string | null; at: number; reasons: ('voice' | 'named' | 'voice_there' | 'named_there')[] };
 type Pagination = { data: Segment[]; current_page: number; last_page: number; per_page: number; total: number; from: number | null; to: number | null };
 
-const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speakers: Speaker[]; players: { id: number; name: string }[] }>();
+const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speakers: Speaker[]; players: { id: number; name: string }[]; shared_moments: Record<number, SharedMoment[]> }>();
 const stream = reactive<StreamDetail>({ ...props.stream });
 watch(() => props.stream, (value) => { Object.assign(stream, value); }, { deep: true });
 const search = ref(props.search);
@@ -32,9 +36,13 @@ const speakerClass = (speaker: number) => 'segment-speaker-' + (speaker === 0 ? 
 const findSpeaker = (speaker: number) => props.speakers.find((candidate) => candidate.speaker === speaker);
 const isMatched = (speaker: number) => findSpeaker(speaker)?.source === 'matched';
 const similarityLabel = (item: Speaker) => Math.round((item.similarity ?? 0) * 100) + '% gelijk';
+// Why a speaker is shown as a player: what they say, or how they sound.
+const matchReason = (item: Speaker) => item.matched_by === 'text'
+    ? 'zegt ' + item.text_hits + ' keer hetzelfde als ' + item.name + ' op dat moment in diens eigen stream'
+    : 'stem ' + similarityLabel(item);
 const speakerTitle = (speaker: number) => {
     const item = findSpeaker(speaker);
-    if (item?.source === 'matched') return 'Herkend aan de stem (' + similarityLabel(item) + '). Klik om te bevestigen of te wijzigen.';
+    if (item?.source === 'matched') return 'Herkend: ' + matchReason(item) + '. Klik om te bevestigen of te wijzigen.';
     if (item?.named) return 'Spreker ' + speaker + ', benoemd door jou. Klik om te wijzigen.';
     return (speaker === 0 ? 'Spreekt het meest in deze stream, waarschijnlijk de streamer.' : 'Een andere stem in deze stream.') + ' Klik om te wijzigen.';
 };
@@ -57,7 +65,7 @@ const editedSpeaker = computed(() => editingSpeaker.value === null ? undefined :
 const automaticLabel = computed(() => {
     const item = editedSpeaker.value;
     if (!item) return 'Automatisch';
-    if (item.source === 'matched') return 'Automatisch: herkend als ' + item.name + ' (' + similarityLabel(item) + ')';
+    if (item.source === 'matched') return 'Automatisch: herkend als ' + item.name + ' (' + matchReason(item) + ')';
     return item.speaker === 0 ? 'Automatisch: de streamer (' + stream.player.name + ')' : 'Automatisch: herkennen aan de stem';
 });
 // A voice match is a guess until confirmed; confirming makes it a known voice of that player.
@@ -87,6 +95,19 @@ const moveSegment = (segment: Segment, value: string) => {
     if (speaker === segment.speaker) return;
     router.put('/segments/' + segment.id + '/speaker', { speaker }, speakerOptions);
 };
+const sharedMoments = (event: StreamEvent) => props.shared_moments[event.id] ?? [];
+const momentUrl = (moment: SharedMoment) => '/streams/' + moment.stream_id + '?' + new URLSearchParams(moment.event_id !== null ? { event: String(moment.event_id) } : { tab: 'transcript', at: String(moment.at) });
+const momentTitle = (moment: SharedMoment) => {
+    const them = moment.player.name;
+    const us = stream.player.name;
+    const reasons = moment.reasons.map((reason) => ({
+        voice: 'je hoort ' + them + ' in dit event',
+        named: them + ' wordt genoemd',
+        voice_there: 'bij ' + them + ' hoor je ' + us,
+        named_there: them + ' noemt ' + us,
+    })[reason]);
+    return 'Zelfde moment in "' + moment.stream_title + '": ' + reasons.join(', ') + '.';
+};
 const selectedEvent = computed(() => props.events.find((event) => event.id === props.selected_event_id));
 
 // The tab lives in the URL (?tab=), so links and the back button work. Without one, a selected
@@ -96,7 +117,7 @@ const tabs: Tab[] = ['events', 'transcript', 'clips'];
 const tabLabels: Record<Tab, string> = { events: 'Events', transcript: 'Transcript', clips: 'Clips' };
 const page = usePage();
 const query = computed(() => Object.fromEntries(new URL(page.url, window.location.origin).searchParams));
-const activeTab = computed<Tab>(() => tabs.includes(query.value.tab as Tab) ? query.value.tab as Tab : (query.value.clip ? 'clips' : query.value.event || query.value.search || query.value.page ? 'transcript' : 'events'));
+const activeTab = computed<Tab>(() => tabs.includes(query.value.tab as Tab) ? query.value.tab as Tab : (query.value.clip ? 'clips' : query.value.event || query.value.at || query.value.search || query.value.page ? 'transcript' : 'events'));
 const tabCount = (tab: Tab) => ({ events: props.events.length, transcript: stream.segment_count, clips: clips.value.length })[tab];
 const tabUrl = (tab: Tab) => streamUrl + '?' + new URLSearchParams({ ...query.value, tab });
 
@@ -259,6 +280,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
         <section v-if="activeTab === 'events'" class="detail-panel" aria-label="Events">
             <div v-if="events.length" class="event-list">
                 <div v-for="event in events" :key="event.id" class="event-entry">
+                    <div class="event-main">
                     <button type="button" class="event-item" :class="{ 'event-item-active': event.id === selected_event_id }" :aria-pressed="event.id === selected_event_id" @click="selectEvent(event)">
                         <span class="event-item-top"><span v-if="event.type !== 'other'" class="event-type" :class="'event-type-' + event.type">{{ eventTypeLabel(event.type) }}</span><span class="event-time event-time-end">{{ formatSeconds(event.start_time) }} – {{ formatSeconds(event.end_time) }}</span></span>
                         <span class="event-title">{{ event.title }}</span>
@@ -270,6 +292,13 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
                         <Link v-if="eventClip(event)" class="event-clip-button event-clip-done" :href="clipUrl(eventClip(event)!)" preserve-state preserve-scroll>✓ Clip</Link>
                         <button v-else class="event-clip-button" type="button" @click="clipFromEvent(event)">＋ Clip</button>
                     </span>
+                    </div>
+                    <div v-if="sharedMoments(event).length" class="event-moments">
+                        <span class="transcription-stage">Zelfde moment bij</span>
+                        <Link v-for="moment in sharedMoments(event)" :key="moment.stream_id" class="event-moment" :href="momentUrl(moment)" :title="momentTitle(moment)">
+                            <PlayerAvatar :name="moment.player.name" :photo-url="moment.player.photo_url" size="sm" /><strong>{{ moment.player.name }}</strong><span>{{ moment.event_title ?? 'transcript op ' + formatSeconds(moment.at) }}</span>
+                        </Link>
+                    </div>
                 </div>
             </div>
             <div v-else class="detail-empty">
@@ -310,7 +339,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
             </form>
             <div v-if="speakers.length" class="speaker-bar">
                 <span class="transcription-stage">Sprekers</span>
-                <button v-for="item in speakers" :key="item.speaker" class="speaker-chip" :class="[speakerClass(item.speaker), { 'speaker-chip-active': editingSpeaker === item.speaker, 'speaker-matched': item.source === 'matched' }]" type="button" :title="(item.source === 'matched' ? 'Herkend aan de stem (' + similarityLabel(item) + '). ' : '') + 'Spreker ' + item.speaker + ' · ' + item.segment_count + ' zinnen. Klik om te benoemen of samen te voegen.'" @click="editSpeaker(item)">
+                <button v-for="item in speakers" :key="item.speaker" class="speaker-chip" :class="[speakerClass(item.speaker), { 'speaker-chip-active': editingSpeaker === item.speaker, 'speaker-matched': item.source === 'matched' }]" type="button" :title="(item.source === 'matched' ? 'Herkend: ' + matchReason(item) + '. ' : '') + 'Spreker ' + item.speaker + ' · ' + item.segment_count + ' zinnen. Klik om te benoemen of samen te voegen.'" @click="editSpeaker(item)">
                     {{ item.name }}<template v-if="item.source === 'matched'">?</template><span>{{ formatSeconds(item.seconds) }}</span>
                 </button>
             </div>
@@ -326,6 +355,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
                 <div v-if="speakerForm.choice === 'label'" class="form-field"><label for="speaker-label">Naam</label><input id="speaker-label" v-model="speakerForm.label" type="text" maxlength="60" placeholder="bijv. een gast of de chat-TTS" required /></div>
                 <button class="primary-button" type="submit">Opslaan</button>
                 <button v-if="editedSpeaker?.source === 'matched'" class="secondary-button" type="button" @click="confirmMatch">✓ Klopt, dit is {{ editedSpeaker.name }}</button>
+                <Link v-if="editedSpeaker?.matched_by === 'text' && editedSpeaker.text_stream_id" class="inline-link speaker-evidence" :href="'/streams/' + editedSpeaker.text_stream_id">Stream van {{ editedSpeaker.name }} bekijken ↗</Link>
                 <div class="speaker-merge">
                     <div class="form-field"><label for="speaker-merge">Is dezelfde persoon als</label>
                         <select id="speaker-merge" v-model="speakerForm.mergeInto"><option value="">Kies een spreker…</option><option v-for="item in speakers.filter((candidate) => candidate.speaker !== editingSpeaker)" :key="item.speaker" :value="String(item.speaker)">{{ item.name }}</option></select>

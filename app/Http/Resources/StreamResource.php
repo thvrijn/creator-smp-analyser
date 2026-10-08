@@ -21,6 +21,8 @@ class StreamResource extends JsonResource
             'video_path' => $this->video_path,
             'video_mime_type' => $this->video_mime_type,
             'twitch_video_id' => $this->twitch_video_id,
+            // While the stream is live the VOD is only a recording up to now, so link to the channel's live stream.
+            'twitch_url' => $this->twitchUrl(),
             'video_file_size' => $this->video_file_size,
             'video_download_status' => $this->video_download_status,
             'video_download_progress' => $this->video_download_progress,
@@ -53,5 +55,18 @@ class StreamResource extends JsonResource
             'video_download_cancelling' => $this->video_download_cancel_requested_at !== null,
             'status' => $this->ended_at === null ? 'Live' : 'Finished',
         ];
+    }
+
+    private function twitchUrl(): ?string
+    {
+        if ($this->twitch_video_id === null) {
+            return null;
+        }
+
+        if ($this->ended_at === null && $this->player->twitch_login !== null) {
+            return 'https://www.twitch.tv/'.$this->player->twitch_login;
+        }
+
+        return 'https://www.twitch.tv/videos/'.$this->twitch_video_id;
     }
 }

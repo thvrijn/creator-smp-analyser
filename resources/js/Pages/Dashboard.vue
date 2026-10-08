@@ -1,13 +1,28 @@
 <script setup lang="ts">
 import { Head, Link, router } from '@inertiajs/vue3';
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import ActiveJobs from '../Components/ActiveJobs.vue';
 import EmptyState from '../Components/EmptyState.vue';
 import FlashMessages from '../Components/FlashMessages.vue';
 import PlayerAvatar from '../Components/PlayerAvatar.vue';
 import AppLayout from '../Layouts/AppLayout.vue';
-import { formatDate, type PlayerStats } from '../types/streams';
+import { formatDate, type PlayerStats, type Stream } from '../types/streams';
 
-const props = defineProps<{ players: PlayerStats[] }>();
+const props = defineProps<{ players: PlayerStats[]; active_streams: Stream[] }>();
+// "Nu bezig" follows the running jobs: every 3 s while something runs, every 15 s to notice new ones. When a job
+// finishes, the player cards (transcribed and event counts) are reloaded too.
+let pollTimer: number | undefined;
+let stopped = false;
+const poll = () => {
+    const before = props.active_streams.map((stream) => stream.id).join(',');
+    router.reload({
+        only: ['active_streams'],
+        onSuccess: () => { if (props.active_streams.map((stream) => stream.id).join(',') !== before) router.reload({ only: ['players'] }); },
+        onFinish: () => { if (!stopped) pollTimer = window.setTimeout(poll, props.active_streams.length ? 3000 : 15000); },
+    });
+};
+onMounted(() => { pollTimer = window.setTimeout(poll, props.active_streams.length ? 3000 : 15000); });
+onBeforeUnmount(() => { stopped = true; window.clearTimeout(pollTimer); });
 const search = ref('');
 const syncing = ref(false);
 // Only the VOD list of every player with a Twitch channel; no video is downloaded.
@@ -31,6 +46,7 @@ const plural = (count: number, word: string) => count + ' ' + word + (count === 
     <AppLayout title="Dashboard" eyebrow="Spelers">
         <div class="streams-toolbar"><div><p class="section-kicker">Creator SMP 4</p><h2 class="page-section-title">Spelers</h2><p class="muted-copy">Kies een speler om de streams, transcripts en events te zien.</p></div><div class="button-row"><button class="secondary-button" type="button" :disabled="syncing" title="Haalt de nieuwe Twitch-VOD's van alle spelers op (zonder video)." @click="syncAllVods"><span class="button-icon" aria-hidden="true">⟳</span> {{ syncing ? 'Syncen…' : "Alle VOD's syncen" }}</button><Link class="secondary-button" href="/players">Spelers beheren</Link></div></div>
         <FlashMessages />
+        <ActiveJobs v-if="active_streams.length" :streams="active_streams" />
         <template v-if="players.length">
         <label class="sr-only" for="player-search">Spelers zoeken</label>
         <input id="player-search" v-model="search" class="player-search" type="search" placeholder="Zoek speler…" />
