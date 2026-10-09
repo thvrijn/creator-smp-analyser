@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { formatSeconds } from '../composables/streamStatus';
 
 // The stream's audio with our own controls instead of the browser's. The media element only loads
@@ -46,6 +46,24 @@ const onPlaying = (value: boolean) => { playing.value = value; emit('playing', v
 /** Plays from a moment in the file: segment and event times are file times. */
 const playFrom = async (seconds: number) => { seek(seconds); await play(); };
 defineExpose({ playFrom });
+
+// Space plays and pauses anywhere on the page, except while typing. It also takes over from a focused button: after
+// ▶ on a segment, space would otherwise press that ▶ again and restart the line instead of pausing.
+const NON_TEXT_INPUTS = ['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'color', 'file', 'image'];
+const isTyping = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable
+    || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+    || (target instanceof HTMLInputElement && !NON_TEXT_INPUTS.includes(target.type)));
+const isPlayKey = (event: KeyboardEvent) => event.code === 'Space' && !event.ctrlKey && !event.metaKey && !event.altKey
+    && !event.shiftKey && !event.isComposing && !isTyping(event.target);
+const onKeydown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || !isPlayKey(event)) return;
+    event.preventDefault();
+    if (!event.repeat) toggle();
+};
+// Some browsers press a focused button on keyup, even when the keydown was prevented.
+const onKeyup = (event: KeyboardEvent) => { if (isPlayKey(event)) event.preventDefault(); };
+onMounted(() => { window.addEventListener('keydown', onKeydown); window.addEventListener('keyup', onKeyup); });
+onBeforeUnmount(() => { window.removeEventListener('keydown', onKeydown); window.removeEventListener('keyup', onKeyup); });
 </script>
 
 <template>
@@ -54,7 +72,7 @@ defineExpose({ playFrom });
             @loadedmetadata="duration = audio?.duration ?? 0" @durationchange="duration = audio?.duration ?? 0"
             @timeupdate="onTime" @play="onPlaying(true)" @pause="onPlaying(false)" @ended="onPlaying(false)"
             @waiting="loading = true" @playing="loading = false" @canplay="loading = false" />
-        <button class="audio-button audio-play" type="button" :aria-label="playing ? 'Pauzeren' : 'Afspelen'" :title="playing ? 'Pauzeren' : 'Afspelen'" @click="toggle">
+        <button class="audio-button audio-play" type="button" :aria-label="playing ? 'Pauzeren' : 'Afspelen'" :title="(playing ? 'Pauzeren' : 'Afspelen') + ' (spatie)'" aria-keyshortcuts="Space" @click="toggle">
             <svg v-if="loading && playing" class="audio-spinner" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /></svg>
             <svg v-else-if="playing" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="4" width="3.5" height="12" rx="1" /><rect x="11.5" y="4" width="3.5" height="12" rx="1" /></svg>
             <svg v-else viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 4.2v11.6a.8.8 0 0 0 1.2.7l9-5.8a.8.8 0 0 0 0-1.4l-9-5.8a.8.8 0 0 0-1.2.7Z" /></svg>
