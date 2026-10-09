@@ -61,6 +61,7 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 ## Klaar
 
+- [x] Whisper op de Mac via de GPU (mlx-whisper) in plaats van de CPU: 10 min van stream 2 in 21 s i.p.v. 157 s (29× realtime), een stream van ~6 uur zou zo ~12 minuten duren (binnen het uur van een job). Zelfde stiltefilter en tijden als op de CPU; een herhalingslus bij muziek (15× "Oh.") wordt samengevoegd. `WHISPER_DEVICE=cpu` zet hem terug op de CPU.
 - [x] Sprekers herkennen aan wat ze zeggen: zegt een spreker op hetzelfde moment dezelfde zinnen als de streamer van een andere stream, dan is het die speler. Gaat vóór stemherkenning, werkt ook als de stem via Discord anders klinkt, en zo herkende stemmen verbeteren het stemprofiel. Draait vanzelf na elke transcriptie; voor oude streams `php artisan speakers:match-text`. Nog te testen op een echt paar (47 + 51).
 - [x] Dashboard toont bovenaan "Nu bezig": welke streams nu audio ophalen, transcriberen of analyseren (of in de wachtrij staan), met voortgang, resterende tijd, worker en annuleren. Werkt zichzelf elke 3 seconden bij.
 - [x] Whisper-model van `small` naar `large-v3-turbo`: op 10 min van stream 47 sneller (37 s i.p.v. 84 s), 13% meer woorden, geen verzonnen herhalingen, en kortere zinnen per spreekbeurt (beter voor sprekerherkenning).

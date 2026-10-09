@@ -161,6 +161,8 @@ endif
 remote-worker-check:
 	@for i in $$(seq 1 30); do curl -fsS http://localhost:$${REMOTE_WORKER_PORT:-8001}/health >/dev/null 2>&1 && break; sleep 1; done; \
 	curl -fsS http://localhost:$${REMOTE_WORKER_PORT:-8001}/health || { echo "FAIL: the worker does not answer on port $${REMOTE_WORKER_PORT:-8001} (see: make remote-worker-logs)"; exit 1; }; echo; \
+	url=$$(sed -n 's/^WORKER_PUBLIC_URL=//p' worker/.env | tail -1 | tr -d "\"'"); \
+	[ -z "$$url" ] || curl -fsS -m 5 -o /dev/null "$$url/health" || { echo "FAIL: the worker does not answer on WORKER_PUBLIC_URL $$url, where the app connects (check it in worker/.env, and WORKER_HOST if set)"; exit 1; }; \
 	for i in $$(seq 1 20); do \
 		log=$$( { [ "$$(uname -s)" = Darwin ] && tail -n 50 $(WORKER_LOG) || $(REMOTE_WORKER) logs --tail=50 worker; } 2>/dev/null | grep 'registration:' | tail -1); \
 		case "$$log" in *"checked in"*) echo "ok: $${log#*registration: }"; exit 0;; esac; sleep 1; \

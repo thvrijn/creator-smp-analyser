@@ -16,8 +16,13 @@ def main() -> None:
     whisper_cache = os.getenv("WHISPER_MODEL_CACHE", "/worker/.cache")
     event_model = os.getenv("EVENT_MODEL", "unsloth/Qwen3-8B-bnb-4bit")
 
-    print(f"prefetch: whisper {whisper_model} -> {whisper_cache}", flush=True)
-    download_model(whisper_model, cache_dir=whisper_cache)
+    if os.getenv("WHISPER_DEVICE") == "mlx":
+        # An MLX checkpoint (scripts/worker-mac.sh), loaded by mlx-whisper from the Hugging Face cache.
+        print(f"prefetch: whisper {whisper_model} -> {os.getenv('HF_HOME', '~/.cache/huggingface')}", flush=True)
+        snapshot_download(whisper_model)
+    else:
+        print(f"prefetch: whisper {whisper_model} -> {whisper_cache}", flush=True)
+        download_model(whisper_model, cache_dir=whisper_cache)
 
     print(f"prefetch: event model {event_model} -> {os.getenv('HF_HOME', '~/.cache/huggingface')}", flush=True)
     snapshot_download(event_model, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.jinja"])

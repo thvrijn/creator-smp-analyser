@@ -15,6 +15,7 @@ from faster_whisper import WhisperModel
 import diarization
 import registration
 from event_extractor import EventExtractor
+from mlx_whisper_model import MlxWhisperModel
 from model_manager import ModelManager
 
 STORAGE_ROOT = Path(os.getenv("WORKER_STORAGE_ROOT", "/var/www/html/storage/app/private")).resolve()
@@ -22,6 +23,8 @@ MODEL_NAME = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 LANGUAGE = os.getenv("WHISPER_LANGUAGE", "nl") or None
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+# Threads on the CPU (WHISPER_DEVICE=cpu); 0 = faster-whisper's default of 4. More is not faster per se: on an M4 Pro 8 was slower.
+CPU_THREADS = max(0, int(os.getenv("WHISPER_CPU_THREADS", "0") or 0))
 MODEL_CACHE = os.getenv("WHISPER_MODEL_CACHE", "/worker/.cache")
 FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT_SECONDS", "7200"))
 WHISPER_CHUNK_SECONDS = max(30, float(os.getenv("WHISPER_CHUNK_SECONDS", "300")))
@@ -178,11 +181,17 @@ def transcription_spans(ranges: list[list[float]] | None, duration: float) -> li
     return merged
 
 
-def load_whisper_model() -> WhisperModel:
-    return WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE, download_root=MODEL_CACHE)
+def load_whisper_model() -> WhisperModel | MlxWhisperModel:
+    if DEVICE == "mlx":
+        # The Mac's GPU (scripts/worker-mac.sh); MODEL_NAME is then an MLX checkpoint on Hugging Face.
+        return MlxWhisperModel(MODEL_NAME)
+    return WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE, cpu_threads=CPU_THREADS, download_root=MODEL_CACHE)
 
 
 def unload_whisper_model(model: Any) -> None:
+    if isinstance(model, MlxWhisperModel):
+        model.unload()
+        return
     ctranslate2_model = getattr(model, "model", None)
     if ctranslate2_model is not None and hasattr(ctranslate2_model, "unload_model"):
         ctranslate2_model.unload_model()

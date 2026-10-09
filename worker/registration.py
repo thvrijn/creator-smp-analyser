@@ -60,7 +60,7 @@ def worker_name() -> str:
 
 
 def backend() -> str:
-    if os.getenv("EVENT_DEVICE") == "mlx":
+    if "mlx" in (os.getenv("EVENT_DEVICE"), os.getenv("WHISPER_DEVICE")):
         return "mlx"
     if "cuda" in (os.getenv("EVENT_DEVICE", "cuda"), os.getenv("WHISPER_DEVICE", "cpu")):
         return "cuda"

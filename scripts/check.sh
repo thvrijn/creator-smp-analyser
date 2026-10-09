@@ -55,6 +55,7 @@ if importlib.util.find_spec('mlx'):
     import mlx.core as mx
     assert mx.metal.is_available(), 'mlx: Metal not available'
     x = mx.ones(1024); assert (x * 2).sum().item() == 2048
+    assert importlib.util.find_spec('mlx_whisper'), 'mlx-whisper not installed (make remote-worker or make start installs it)'
     info = mx.device_info()
     name, memory = info['device_name'], info['memory_size']
     print(f'{name} (MLX {mx.__version__}, {memory / 2**30:.1f} GB unified memory)')
