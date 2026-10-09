@@ -187,27 +187,41 @@ a.stream-title:hover { color: #fff; text-decoration: underline; text-decoration-
 .detail-empty { padding: 50px 10px; color: #818196; text-align: center; }
 .detail-empty h3 { margin: 0 0 6px; color: #e6e6eb; font: 600 14px 'Space Grotesk', sans-serif; }
 .detail-empty p { margin: 0; font-size: 12px; }
-.event-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 9px; overflow-y: auto; padding-right: 4px; }
+.event-list { display: flex; flex-direction: column; gap: 9px; }
 .event-item { display: flex; flex-direction: column; gap: 6px; width: 100%; cursor: pointer; border: 1px solid #282837; border-radius: 9px; background: #1b1b25; padding: 13px 14px; color: inherit; font: inherit; text-align: left; transition: border-color .15s ease, background .15s ease; }
 .event-item:hover { border-color: #474756; background: #22222e; }
 .event-item-active { border-color: #e8a011; background: #e8a01412; }
 .event-item-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .event-type { border-radius: 5px; background: #2c2c3d; padding: 3px 7px; color: #c1c1cc; font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .event-type-death, .event-type-combat, .event-type-destruction { background: #3b202d; color: #f0a0ac; }
-.event-type-player_encounter, .event-type-conversation { background: #9146ff29; color: #c7a8ff; }
+.event-type-player_encounter, .event-type-conversation, .event-type-teamwork { background: #9146ff29; color: #c7a8ff; }
+.event-type-conflict { background: #4a2a14; color: #f5a46b; }
+.event-type-trade { background: #e8a01124; color: #f5bd4f; }
+.event-type-plot { background: #1d3550; color: #8cc4f5; }
 .event-type-discovery, .event-type-item { background: #e8a01124; color: #f5bd4f; }
 .event-type-building { background: #173b35; color: #6bd0a9; }
 .event-time { color: #f0b744; font: 600 10px 'Space Grotesk', sans-serif; white-space: nowrap; }
 .event-title { color: #ebebef; font-size: 13px; font-weight: 600; }
 .event-description { color: #9090a2; font-size: 12px; line-height: 1.45; }
 .event-meta { color: #68687d; font-size: 10px; }
-.transcript-list-scroll { position: relative; min-height: 0; flex: 1; overflow-y: auto; }
-/* AppLayout fill: the page fits the viewport, the active panel takes the rest and only its list scrolls. */
-.app-main-fill { display: flex; height: 100vh; flex-direction: column; overflow: hidden; }
-.app-main-fill .page-content { display: flex; width: 100%; min-height: 0; flex: 1; flex-direction: column; padding-bottom: 24px; }
-.app-main-fill .detail-panel { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+/* Stream page: the page scrolls. Once the title is gone, a compact bar (title + status) slides in at the top, like a
+   large title in an Apple app; the audio player and the tabs stick below it. A tab is at least a screen high, so
+   switching tabs never jumps the page back up. */
+.stream-compact { position: fixed; top: 0; right: 0; left: 248px; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 58px; border-bottom: 1px solid #232330; background: #0c0c12eb; padding: 0 46px; backdrop-filter: blur(12px); opacity: 0; transform: translateY(-100%); transition: transform .22s ease, opacity .22s ease; }
+.stream-compact-visible { opacity: 1; transform: none; }
+.stream-compact-title { display: flex; min-width: 0; align-items: center; gap: 10px; cursor: pointer; border: 0; background: none; padding: 0; color: inherit; font: inherit; text-align: left; }
+.stream-compact-title > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.stream-compact-title strong { overflow: hidden; color: #ebebef; font: 600 14px 'Space Grotesk', sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.stream-compact-title:hover strong { color: #f5b020; }
+.stream-compact-statuses { display: flex; flex: none; gap: 14px; }
+.stream-sticky { position: sticky; top: 0; z-index: 20; margin: 0 -46px 14px; background: #0a0a0feb; padding: 10px 46px 0; backdrop-filter: blur(12px); transition: top .22s ease; }
+.stream-sticky-compact { top: 58px; }
+.stream-sticky .stream-audio { margin-bottom: 10px; }
+.stream-sticky .stream-tabs { margin-bottom: 0; }
+.stream-panel { min-height: calc(100vh - 190px); }
+@media (max-width: 700px) { .stream-compact { left: 0; padding: 0 20px; } .stream-tabs { overflow-x: auto; scrollbar-width: none; } .stream-tab { flex: none; } .stream-compact-statuses { display: none; } .stream-sticky { margin: 0 -20px 14px; padding: 8px 20px 0; } }
 .segment-highlight { border-left: 3px solid #e8a011; background: #e8a01414; padding-left: 10px; }
-@media (max-width: 700px) { .stream-hero { flex-direction: column; } .app-main-fill { height: auto; overflow: visible; } }
+@media (max-width: 700px) { .stream-hero { flex-direction: column; } }
 .event-link { display: block; min-height: 0; color: inherit; text-decoration: none; transition: border-color .15s ease; }
 .event-link:hover { border-color: #746037; }
 .event-time-end { margin-left: auto; }
@@ -237,12 +251,14 @@ a.stream-title:hover { color: #fff; text-decoration: underline; text-decoration-
 .segment-speaker-5 { color: #d6b25f; }
 .segment-speaker-0 { color: #9aa0b8; }
 .segment-clip:hover { border-color: #e8a011; color: #f5c35a; }
-.app-main-fill .clips-panel { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 18px; }
+.clips-panel { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); align-items: start; gap: 18px; }
+/* The clip player stays in view below the sticky bars while the clip list scrolls past. */
+.clip-stage { position: sticky; top: calc(var(--stream-sticky-bottom, 0px) + 14px); }
 .clip-side { display: flex; min-height: 0; flex-direction: column; }
 .clip-player { width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 9px; background: #000; }
-@media (max-width: 1000px) { .app-main-fill .clips-panel { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); } }
+@media (max-width: 1000px) { .clips-panel { grid-template-columns: 1fr; } .clip-stage { position: static; } }
 .twitch-player, .twitch-player iframe { width: 100%; height: 100%; }
-.clip-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 4px; }
+.clip-list { display: flex; flex-direction: column; gap: 8px; }
 .clip-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 14px; flex: none; border: 1px solid #282837; border-radius: 9px; background: #1b1b25; padding: 10px 12px; cursor: pointer; }
 .clip-item-active { border-color: #e8a011; background: #e8a01414; }
 .clip-title { min-width: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 4px 6px; color: #f5f5f7; font: 600 13px 'Montserrat', sans-serif; }
@@ -361,3 +377,33 @@ button.segment-speaker.speaker-matched { font-style: italic; }
 .active-job-head .cancel-link { margin-left: auto; }
 .active-job-progress { width: 100%; }
 .speaker-evidence { align-self: center; font-size: 11px; }
+
+/* Verhaal tab: the storyline of the stream (what happened in the game) and a summary per part. */
+.story-panel { display: flex; flex-direction: column; gap: 18px; }
+.story-summary { max-width: 760px; }
+.story-summary p { margin: 0 0 10px; color: #d6d6de; font-size: 14px; line-height: 1.65; }
+.story-players { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.story-player { border: 1px solid #9146ff4d; border-radius: 999px; background: #9146ff17; padding: 3px 10px; color: #c7a8ff; font-size: 11px; text-decoration: none; }
+a.story-player:hover { border-color: #9146ff; }
+.story-parts { display: flex; flex-direction: column; gap: 2px; max-width: 900px; }
+.story-part { display: grid; grid-template-columns: 150px 1fr auto; gap: 12px; align-items: start; border-left: 2px solid #2c2c3d; padding: 8px 0 8px 14px; }
+.story-part:hover { border-left-color: #e8a011; }
+.story-part p { margin: 0; color: #b4b4c2; font-size: 13px; line-height: 1.5; }
+.story-part-actions { display: flex; gap: 6px; }
+@media (max-width: 700px) { .story-part { grid-template-columns: 1fr; gap: 4px; } }
+
+/* "Spreker 6" in an event or the storyline: click to say who it is (SpeakerText). */
+.speaker-mention { cursor: pointer; border-bottom: 1px dashed #e8a011; color: #f5bd4f; font-weight: 600; }
+.speaker-mention:hover, .speaker-mention:focus-visible { outline: 0; background: #e8a01420; }
+.speaker-mention-known { border-bottom-style: dotted; border-bottom-color: #6b6b80; color: inherit; }
+.speaker-editor-modal { width: min(100%, 620px); margin: 0; background: #191922; box-shadow: 0 24px 80px #030711cc; }
+.speaker-editor-modal .speaker-merge { width: 100%; margin-left: 0; border-top: 1px solid #2c2c3c; border-left: 0; padding: 12px 0 0; }
+/* The transcript filtered on one speaker (?speaker=n), with naming and the way back. */
+.speaker-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; border: 1px solid #e8a01155; border-radius: 9px; background: #e8a0110f; padding: 10px 14px; }
+.speaker-filter p { margin: 0 auto 0 0; }
+/* Correcting a transcript line by hand; the recognised text stays visible. */
+.segment-text-editor { display: flex; flex-direction: column; gap: 8px; margin: 4px 0; }
+.segment-text-editor textarea { width: 100%; resize: vertical; border: 1px solid #e7a013; border-radius: 6px; outline: 0; background: #14141c; padding: 8px 10px; color: #e3e3e8; font: inherit; font-size: 13px; line-height: 1.5; box-shadow: 0 0 0 3px #e7a01322; }
+.segment-text-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.segment-original { margin: 0; color: #6e6e84; font-size: 11px; }
+.segment-edited { margin-left: 8px; border-radius: 4px; background: #232331; padding: 1px 5px; color: #9090a2; font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; vertical-align: middle; cursor: help; }

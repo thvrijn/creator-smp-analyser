@@ -112,10 +112,10 @@ class EventExtractionTest extends TestCase
         $stream = $this->createStream('completed');
         $stream->update(['event_extraction_status' => 'queued']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Transcript']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker = $this->workerMock();
         $worker->shouldReceive('extract')->once()->andReturnUsing(function () use ($stream): array {
             $this->assertSame('processing', $stream->refresh()->event_extraction_status);
-            return [];
+            return $this->chunkResult([]);
         });
 
         $this->markQueued($stream, 'event_extraction');
@@ -133,8 +133,8 @@ class EventExtractionTest extends TestCase
         $stream = $this->createStream('completed');
         $first = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Alex is near the village']);
         $second = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '4.000', 'end_time' => '6.000', 'text' => 'We talk to Alex']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturn([[
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([[
             'type' => 'player_encounter',
             'title' => 'Player encounters Alex',
             'description' => 'The transcript says Alex is near the village.',
@@ -142,7 +142,7 @@ class EventExtractionTest extends TestCase
             'end_time' => 6.0,
             'confidence' => 0.94,
             'segment_indexes' => [0, 1],
-        ]]);
+        ]]));
 
         $this->markQueued($stream, 'event_extraction');
 
@@ -160,13 +160,18 @@ class EventExtractionTest extends TestCase
     {
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Transcript']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturn([
-            ['type' => 'not_allowed', 'title' => 'Bad', 'description' => 'Bad', 'confidence' => 1, 'segment_indexes' => [0]],
-            ['type' => 'death', 'title' => 'Bad confidence', 'description' => 'Bad', 'confidence' => '0.5', 'segment_indexes' => [0]],
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '4.000', 'end_time' => '6.000', 'text' => 'More transcript']);
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([
+            ['type' => 'not_allowed', 'title' => 'Bad', 'description' => 'Bad', 'confidence' => 1, 'segment_indexes' => [0, 1]],
+            // Types of the old prompt are no longer accepted.
+            ['type' => 'statement', 'title' => 'Old type', 'description' => 'Bad', 'confidence' => 1, 'segment_indexes' => [0, 1]],
+            ['type' => 'death', 'title' => 'Bad confidence', 'description' => 'Bad', 'confidence' => '0.5', 'segment_indexes' => [0, 1]],
+            // One line is a remark, not an event.
+            ['type' => 'death', 'title' => 'One remark', 'description' => 'Bad', 'confidence' => 0.8, 'segment_indexes' => [1]],
             'not an object',
-            ['type' => 'death', 'title' => 'Creeper', 'description' => 'Killed by a creeper.', 'confidence' => 0.8, 'segment_indexes' => [0]],
-        ]);
+            ['type' => 'death', 'title' => 'Creeper', 'description' => 'Killed by a creeper.', 'confidence' => 0.8, 'segment_indexes' => [0, 1]],
+        ]));
 
         $this->markQueued($stream, 'event_extraction');
 
@@ -183,7 +188,7 @@ class EventExtractionTest extends TestCase
         $stream = $this->createStream('processing');
         $stream->update(['event_extraction_status' => 'processing']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Transcript']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker = $this->workerMock();
         $worker->shouldNotReceive('extract');
 
 
@@ -199,13 +204,14 @@ class EventExtractionTest extends TestCase
         TranscriptSegment::create(['stream_id' => $other->id, 'start_time' => '0.500', 'end_time' => '2.000', 'text' => 'Other stream line']);
         $own = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Own stream line']);
         TranscriptSegment::create(['stream_id' => $other->id, 'start_time' => '2.500', 'end_time' => '4.000', 'text' => 'Other stream line 2']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
+        $ownSecond = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '4.500', 'end_time' => '5.000', 'text' => 'Own stream line 2']);
+        $worker = $this->workerMock();
         $worker->shouldReceive('extract')->once()->andReturnUsing(function (\App\Models\Worker $claimed, array $segments): array {
-            $this->assertSame(['Own stream line'], array_column($segments, 'text'));
-            return [[
-                'type' => 'statement', 'title' => 'Own line', 'description' => 'A statement.',
-                'start_time' => 1.0, 'end_time' => 3.0, 'confidence' => 0.7, 'segment_indexes' => [0],
-            ]];
+            $this->assertSame(['Own stream line', 'Own stream line 2'], array_column($segments, 'text'));
+            return $this->chunkResult([[
+                'type' => 'plot', 'title' => 'Own line', 'description' => 'A plan.',
+                'start_time' => 1.0, 'end_time' => 3.0, 'confidence' => 0.7, 'segment_indexes' => [0, 1],
+            ]]);
         });
 
         $this->markQueued($stream, 'event_extraction');
@@ -214,7 +220,7 @@ class EventExtractionTest extends TestCase
 
         $event = Event::firstOrFail();
         $this->assertSame($stream->id, $event->stream_id);
-        $this->assertSame([$own->id], $event->transcriptSegments()->pluck('transcript_segments.id')->all());
+        $this->assertEqualsCanonicalizing([$own->id, $ownSecond->id], $event->transcriptSegments()->pluck('transcript_segments.id')->all());
     }
 
     public function test_segment_index_outside_the_chunk_is_rejected(): void
@@ -223,11 +229,11 @@ class EventExtractionTest extends TestCase
         $other = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Own stream line']);
         TranscriptSegment::create(['stream_id' => $other->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Other stream line']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturn([[
-            'type' => 'statement', 'title' => 'Bad index', 'description' => 'Points past the chunk.',
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([[
+            'type' => 'plot', 'title' => 'Bad index', 'description' => 'Points past the chunk.',
             'confidence' => 0.7, 'segment_indexes' => [0, 1],
-        ]]);
+        ]]));
 
         $this->markQueued($stream, 'event_extraction');
 
@@ -243,11 +249,11 @@ class EventExtractionTest extends TestCase
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '10.000', 'end_time' => '12.500', 'text' => 'One']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '13.000', 'end_time' => '16.250', 'text' => 'Two']);
-        $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturn([[
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([[
             'type' => 'combat', 'title' => 'Fight', 'description' => 'A fight.',
             'start_time' => 999.0, 'end_time' => 2.0, 'confidence' => 0.6, 'segment_indexes' => [1, 0, 1],
-        ]]);
+        ]]));
 
         $this->markQueued($stream, 'event_extraction');
 
@@ -264,21 +270,23 @@ class EventExtractionTest extends TestCase
         config(['services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 5]);
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '0.000', 'end_time' => '4.000', 'text' => 'Opening']);
-        $shared = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '6.000', 'end_time' => '9.000', 'text' => 'Alex shows up']);
+        $shared = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '6.000', 'end_time' => '7.000', 'text' => 'Alex shows up']);
+        $hello = TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '7.500', 'end_time' => '9.000', 'text' => 'Hoi Alex']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '11.000', 'end_time' => '14.000', 'text' => 'Closing']);
         $calls = 0;
-        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker = $this->workerMock();
         $worker->shouldReceive('extract')->andReturnUsing(function (\App\Models\Worker $claimed, array $segments) use (&$calls): array {
             $calls++;
-            $index = array_search('Alex shows up', array_column($segments, 'text'), true);
-            if ($index === false) {
-                return [];
+            $first = array_search('Alex shows up', array_column($segments, 'text'), true);
+            $second = array_search('Hoi Alex', array_column($segments, 'text'), true);
+            if ($first === false || $second === false) {
+                return $this->chunkResult([]);
             }
-            return [[
+            return $this->chunkResult([[
                 'type' => 'player_encounter', 'title' => $calls === 1 ? 'Alex shows up' : 'ALEX SHOWS UP',
                 'description' => 'Alex appears.', 'start_time' => 6.0, 'end_time' => 9.0,
-                'confidence' => 0.8, 'segment_indexes' => [$index],
-            ]];
+                'confidence' => 0.8, 'segment_indexes' => [$first, $second],
+            ]]);
         });
 
         $this->markQueued($stream, 'event_extraction');
@@ -287,7 +295,7 @@ class EventExtractionTest extends TestCase
 
         $this->assertGreaterThanOrEqual(2, $calls);
         $this->assertDatabaseCount('events', 1);
-        $this->assertSame([$shared->id], Event::firstOrFail()->transcriptSegments()->pluck('transcript_segments.id')->all());
+        $this->assertEqualsCanonicalizing([$shared->id, $hello->id], Event::firstOrFail()->transcriptSegments()->pluck('transcript_segments.id')->all());
     }
 
     public function test_event_covering_too_many_segments_is_skipped(): void
@@ -297,11 +305,11 @@ class EventExtractionTest extends TestCase
         foreach ([1, 4, 7] as $start) {
             TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => number_format($start, 3, '.', ''), 'end_time' => number_format($start + 2, 3, '.', ''), 'text' => 'Line '.$start]);
         }
-        $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturn([
-            ['type' => 'statement', 'title' => 'Chunk summary', 'description' => 'Everything.', 'confidence' => 0.9, 'segment_indexes' => [0, 1, 2]],
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([
+            ['type' => 'plot', 'title' => 'Chunk summary', 'description' => 'Everything.', 'confidence' => 0.9, 'segment_indexes' => [0, 1, 2]],
             ['type' => 'death', 'title' => 'Dies', 'description' => 'Dies.', 'confidence' => 0.9, 'segment_indexes' => [1, 2]],
-        ]);
+        ]));
 
         $this->markQueued($stream, 'event_extraction');
 
@@ -319,18 +327,18 @@ class EventExtractionTest extends TestCase
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '7.500', 'end_time' => '9.000', 'text' => 'Hoi Sam']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '11.000', 'end_time' => '14.000', 'text' => 'Closing']);
         $calls = 0;
-        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker = $this->workerMock();
         $worker->shouldReceive('extract')->andReturnUsing(function (\App\Models\Worker $claimed, array $segments) use (&$calls): array {
             $calls++;
             $texts = array_column($segments, 'text');
             $first = array_search('Sam shows up', $texts, true);
             $second = array_search('Hoi Sam', $texts, true);
             if ($first === false || $second === false) {
-                return [];
+                return $this->chunkResult([]);
             }
-            return $calls === 1
+            return $this->chunkResult($calls === 1
                 ? [['type' => 'other', 'title' => 'Sam arrives', 'description' => 'Sam is there.', 'confidence' => 0.6, 'segment_indexes' => [$first, $second]]]
-                : [['type' => 'player_encounter', 'title' => 'Meets Sam', 'description' => 'Meets Sam.', 'confidence' => 0.9, 'segment_indexes' => [$second]]];
+                : [['type' => 'player_encounter', 'title' => 'Meets Sam', 'description' => 'Meets Sam.', 'confidence' => 0.9, 'segment_indexes' => [$second, $first]]]);
         });
 
         $this->markQueued($stream, 'event_extraction');
@@ -339,6 +347,38 @@ class EventExtractionTest extends TestCase
 
         $this->assertGreaterThanOrEqual(2, $calls);
         $this->assertSame(['Meets Sam'], Event::pluck('title')->all());
+    }
+
+    public function test_a_happening_reported_again_in_the_next_chunk_becomes_one_event(): void
+    {
+        config(['services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 0]);
+        $stream = $this->createStream('completed');
+        foreach ([0, 3, 6, 10, 13, 16, 20, 23] as $start) {
+            TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => $start, 'end_time' => $start + 2, 'text' => "Zin {$start}"]);
+        }
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->times(3)->andReturn(
+            // The district meeting in chunk 1 and 2, told with mostly the same words; chunk 3 is about something else.
+            $this->chunkResult([['type' => 'plot', 'title' => 'Wissel tussen Noord en Zuid', 'description' => 'Jeremy vertelt dat vijf spelers van Noord naar Zuid moeten verhuizen.', 'confidence' => 0.8, 'segment_indexes' => [1, 2]]]),
+            $this->chunkResult([['type' => 'conversation', 'title' => 'Verhuizing naar Zuid', 'description' => 'Jeremy vertelt dat vijf spelers van Noord naar Zuid moeten verhuizen, Morrog vraagt wie.', 'confidence' => 0.9, 'segment_indexes' => [0, 1]]]),
+            $this->chunkResult([['type' => 'combat', 'title' => 'Gevecht met zombies', 'description' => 'Zombies vallen het huisje aan.', 'confidence' => 0.9, 'segment_indexes' => [0, 1]]]),
+        );
+
+        $this->markQueued($stream, 'event_extraction');
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
+
+        $events = Event::orderBy('start_time')->get();
+        $this->assertSame(['Wissel tussen Noord en Zuid', 'Gevecht met zombies'], $events->pluck('title')->all());
+        $this->assertEquals([3.0, 15.0], [$events[0]->start_time, $events[0]->end_time]);
+        $this->assertSame(4, $events[0]->transcriptSegments()->count());
+    }
+
+    public function test_an_event_over_the_whole_chunk_is_its_summary_and_skipped(): void
+    {
+        $this->assertTrue(ExtractStreamEventsJob::coversWholeChunk(170, 173));
+        $this->assertFalse(ExtractStreamEventsJob::coversWholeChunk(92, 155));
+        // A short last chunk may be one event.
+        $this->assertFalse(ExtractStreamEventsJob::coversWholeChunk(10, 10));
     }
 
     public function test_worker_crash_marks_extraction_as_failed_with_error(): void
@@ -367,9 +407,13 @@ class EventExtractionTest extends TestCase
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '0.000', 'end_time' => '4.000', 'text' => 'First chunk']);
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '12.000', 'end_time' => '15.000', 'text' => 'Second chunk']);
-        Http::fake(['worker:8001/extract-events' => Http::sequence()
-            ->push(['error' => 'Event model returned invalid JSON'], 422)
-            ->push(['events' => [['type' => 'statement', 'title' => 'Second', 'description' => 'Said something.', 'confidence' => 0.7, 'segment_indexes' => [0]]]])]);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '15.500', 'end_time' => '17.000', 'text' => 'Second chunk, more']);
+        Http::fake([
+            'worker:8001/extract-events' => Http::sequence()
+                ->push(['error' => 'Event model returned invalid JSON'], 422)
+                ->push(['summary' => 'Er gebeurt iets.', 'events' => [['type' => 'plot', 'title' => 'Second', 'description' => 'Said something.', 'confidence' => 0.7, 'segment_indexes' => [0, 1]]]]),
+            'worker:8001/summarize-story' => Http::response(['summary' => 'Het verhaal.', 'players' => []]),
+        ]);
 
         $this->markQueued($stream, 'event_extraction');
 
@@ -380,16 +424,18 @@ class EventExtractionTest extends TestCase
         $this->assertStringContainsString('1 chunk(s) overgeslagen', $stream->event_extraction_error);
         $this->assertStringContainsString('Event model returned invalid JSON', $stream->event_extraction_error);
         $this->assertSame(['Second'], Event::pluck('title')->all());
+        $this->assertSame('Het verhaal.', $stream->story_summary);
     }
 
     public function test_rerun_replaces_previous_events_and_a_failed_run_keeps_them(): void
     {
         $stream = $this->createStream('completed');
         TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Transcript']);
-        $event = fn (string $title) => ['type' => 'statement', 'title' => $title, 'description' => 'Something.', 'confidence' => 0.7, 'segment_indexes' => [0]];
-        $worker = Mockery::mock(EventExtractionWorker::class);
-        $worker->shouldReceive('extract')->once()->andReturn([$event('First run')]);
-        $worker->shouldReceive('extract')->once()->andReturn([$event('Second run')]);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '4.000', 'end_time' => '6.000', 'text' => 'More transcript']);
+        $event = fn (string $title) => ['type' => 'plot', 'title' => $title, 'description' => 'Something.', 'confidence' => 0.7, 'segment_indexes' => [0, 1]];
+        $worker = $this->workerMock();
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([$event('First run')]));
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([$event('Second run')]));
         $worker->shouldReceive('extract')->once()->andThrow(new \RuntimeException('The event extraction worker could not be reached'));
 
         // Like the Analyseren button, every run is queued first.
@@ -438,23 +484,24 @@ class EventExtractionTest extends TestCase
             TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => $start.'.000', 'end_time' => ($start + 3).'.000', 'text' => 'Chunk at '.$start]);
         }
         $seen = [];
-        $worker = Mockery::mock(EventExtractionWorker::class);
+        $worker = $this->workerMock();
         $worker->shouldReceive('extract')->times(3)->andReturnUsing(function () use ($stream, &$seen): array {
             $stream->refresh();
             $seen[] = [$stream->event_extraction_chunks_done, $stream->event_extraction_chunks_total];
             if (count($seen) === 2) {
                 throw new InvalidModelOutputException('Event model returned invalid JSON');
             }
-            return [];
+            return $this->chunkResult([]);
         });
 
         $this->markQueued($stream, 'event_extraction');
 
         (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
 
-        $this->assertSame([[0, 3], [1, 3], [2, 3]], $seen);
+        // Three chunks plus the storyline of the whole stream.
+        $this->assertSame([[0, 4], [1, 4], [2, 4]], $seen);
         $stream->refresh();
-        $this->assertSame(3, $stream->event_extraction_chunks_done);
+        $this->assertSame(4, $stream->event_extraction_chunks_done);
         $this->assertSame(100, $stream->eventExtractionProgress());
     }
 
@@ -477,6 +524,83 @@ class EventExtractionTest extends TestCase
                 'event_extraction_chunks_total' => 40,
                 'event_extraction_eta_seconds' => 300,
             ]);
+    }
+
+    public function test_the_model_gets_who_speaks_the_streamer_and_the_players_and_the_story_is_stored(): void
+    {
+        config(['services.event_worker.chunk_seconds' => 10, 'services.event_worker.overlap_seconds' => 0]);
+        $stream = $this->createStream('completed');
+        Player::create(['name' => 'Jeremy']);
+        $stream->speakerNames()->create(['speaker' => 1, 'label' => 'Gast']);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '0.000', 'end_time' => '2.000', 'text' => 'Hoi chat', 'speaker' => 0]);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '3.000', 'end_time' => '5.000', 'text' => 'Hallo', 'speaker' => 1]);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '6.000', 'end_time' => '7.000', 'text' => 'Wie ben jij?', 'speaker' => 2]);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '12.000', 'end_time' => '14.000', 'text' => 'Jeremy valt me aan!', 'speaker' => 0]);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '15.000', 'end_time' => '17.000', 'text' => 'Ik ben dood.', 'speaker' => 0]);
+        $worker = $this->workerMock(fn ($mock) => $mock->shouldReceive('summarizeStory')->once()->andReturnUsing(function ($claimed, array $parts, array $events, array $context): array {
+            // Only parts where something happens in the game, and the events in time order.
+            $this->assertSame([['start_time' => 12.0, 'end_time' => 17.0, 'summary' => 'Jeremy vermoordt de streamer.']], $parts);
+            $this->assertSame(['Jeremy vermoordt de streamer'], array_column($events, 'title'));
+            return ['summary' => 'De streamer wordt door Jeremy vermoord.', 'players' => ['Jeremy']];
+        }));
+        $worker->shouldReceive('extract')->twice()->andReturnUsing(function ($claimed, array $segments, array $context) use ($stream): array {
+            $this->assertSame($stream->player->name, $context['streamer']);
+            $this->assertContains('Jeremy', $context['players']);
+            if ($segments[0]['text'] === 'Hoi chat') {
+                // The streamer by name, a speaker named by hand, and an unknown voice.
+                $this->assertSame([$stream->player->name, 'Gast', 'Spreker 2'], array_column($segments, 'speaker'));
+
+                return $this->chunkResult([], '');
+            }
+
+            return $this->chunkResult([['type' => 'combat', 'title' => 'Jeremy vermoordt de streamer', 'description' => 'Jeremy valt aan.', 'confidence' => 0.9, 'segment_indexes' => [0, 1]]], 'Jeremy vermoordt de streamer.');
+        });
+
+        $this->markQueued($stream, 'event_extraction');
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
+
+        $stream->refresh();
+        $this->assertSame('De streamer wordt door Jeremy vermoord.', $stream->story_summary);
+        $this->assertSame(['Jeremy'], $stream->story_players);
+        $this->assertSame([['start_time' => 12, 'end_time' => 17, 'summary' => 'Jeremy vermoordt de streamer.']], $stream->story_parts);
+        $this->assertNull($stream->event_extraction_error);
+    }
+
+    public function test_a_failed_storyline_keeps_the_events_with_a_note(): void
+    {
+        $stream = $this->createStream('completed');
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '1.000', 'end_time' => '3.000', 'text' => 'Sam valt aan']);
+        TranscriptSegment::create(['stream_id' => $stream->id, 'start_time' => '4.000', 'end_time' => '6.000', 'text' => 'Sam is dood']);
+        $worker = $this->workerMock(fn ($mock) => $mock->shouldReceive('summarizeStory')->once()->andThrow(new InvalidModelOutputException('Het eventmodel gaf geen geldige JSON terug')));
+        $worker->shouldReceive('extract')->once()->andReturn($this->chunkResult([['type' => 'combat', 'title' => 'Vecht met Sam', 'description' => 'Een gevecht.', 'confidence' => 0.9, 'segment_indexes' => [0, 1]]], 'Gevecht met Sam.'));
+
+        $this->markQueued($stream, 'event_extraction');
+        (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
+
+        $stream->refresh();
+        $this->assertSame('completed', $stream->event_extraction_status);
+        $this->assertSame(['Vecht met Sam'], Event::pluck('title')->all());
+        $this->assertNull($stream->story_summary);
+        $this->assertStringContainsString('verhaal van de stream kon niet worden geschreven', $stream->event_extraction_error);
+    }
+
+    /** A mock worker; writing the storyline returns an empty story unless $configure sets it up. */
+    private function workerMock(?\Closure $configure = null): \Mockery\MockInterface
+    {
+        $mock = Mockery::mock(EventExtractionWorker::class);
+        if ($configure !== null) {
+            $configure($mock);
+        } else {
+            $mock->shouldReceive('summarizeStory')->andReturn(['summary' => '', 'players' => []]);
+        }
+
+        return $mock;
+    }
+
+    /** What the worker answers for one chunk. */
+    private function chunkResult(array $events, string $summary = 'Er gebeurt iets in de game.'): array
+    {
+        return ['events' => $events, 'summary' => $summary];
     }
 
     private function createStream(string $transcriptionStatus): Stream

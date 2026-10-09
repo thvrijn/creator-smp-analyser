@@ -7,6 +7,7 @@ use App\Http\Controllers\EventController;
 use App\Http\Controllers\PlayerController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SpeakerController;
+use App\Http\Controllers\TranscriptSegmentController;
 use App\Http\Controllers\StreamController;
 use App\Http\Controllers\TwitchVodController;
 use App\Http\Controllers\UserController;
@@ -43,6 +44,7 @@ Route::middleware('auth')->group(function (): void {
     Route::put('/streams/{stream}/speakers/{speaker}', [SpeakerController::class, 'update'])->whereNumber('speaker')->name('streams.speakers.update');
     Route::post('/streams/{stream}/speakers/{speaker}/merge', [SpeakerController::class, 'merge'])->whereNumber('speaker')->name('streams.speakers.merge');
     Route::put('/segments/{segment}/speaker', [SpeakerController::class, 'segment'])->name('segments.speaker');
+    Route::put('/segments/{segment}/text', [TranscriptSegmentController::class, 'update'])->name('segments.text');
     Route::post('/streams/{stream}/extract-events', [StreamController::class, 'extractEvents'])->name('streams.extract-events');
     Route::get('/players', [PlayerController::class, 'index'])->name('players.index');
     Route::post('/players', [PlayerController::class, 'store'])->name('players.store');

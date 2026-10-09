@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\Stream;
+use App\Services\AudioRemux;
 use App\Services\ServerHours;
 use App\Services\StreamJobCanceller;
 use Illuminate\Bus\Queueable;
@@ -32,7 +33,7 @@ class DownloadVodJob implements ShouldQueue
 
     public function __construct(public readonly int $streamId) {}
 
-    public function handle(StreamJobCanceller $canceller): void
+    public function handle(StreamJobCanceller $canceller, AudioRemux $remux): void
     {
         $stream = Stream::find($this->streamId);
         if ($stream === null || ! $this->markAsProcessing($stream)) {
@@ -107,6 +108,8 @@ class DownloadVodJob implements ShouldQueue
 
         $file = $base.'.'.pathinfo($full, PATHINFO_EXTENSION);
         rename($full, $file);
+        // Twitch's HLS recording as a plain MP4, so the stream page's player seeks to the transcript's times.
+        $remux->normalize($file);
         $whole = count($ranges) === 1 && $ranges[0][0] === 0 && $ranges[0][1] >= $vodSeconds;
 
         $path = Str::after($file, Storage::path(''));

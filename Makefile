@@ -94,8 +94,12 @@ stop: idle
 	$(COMPOSE) down
 	@$(MAKE) --no-print-directory worker-down
 
+# `up -d` first: a plain restart keeps the environment the containers were created with, so a changed .env (e.g. the
+# EVENT_* settings) was silently ignored. Then restart the services that hold code in memory, not postgres/redis:
+# restarting everything at once ignores depends_on, and the queue exited when redis was not back yet.
 restart: idle
-	$(COMPOSE) restart
+	$(COMPOSE) up -d --wait
+	$(COMPOSE) restart $(filter app queue worker,$(shell $(COMPOSE) config --services))
 	@$(MAKE) --no-print-directory worker-up
 
 ifeq ($(shell uname -s),Darwin)
@@ -123,6 +127,7 @@ else
 worker-up worker-down: ;
 
 worker-restart: idle
+	$(COMPOSE) up -d --wait worker
 	$(COMPOSE) restart worker
 
 logs-worker:

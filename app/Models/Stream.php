@@ -73,6 +73,8 @@ class Stream extends Model
             'video_offset_seconds' => 'float',
             'transcription_ranges' => 'array',
             'transcription_speakers' => 'array',
+            'story_players' => 'array',
+            'story_parts' => 'array',
             'transcribed_at' => 'datetime',
             'transcription_progress' => 'integer',
             'transcription_processed_seconds' => 'float',

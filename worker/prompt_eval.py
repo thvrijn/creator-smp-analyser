@@ -1,8 +1,11 @@
-"""Evaluates the event-extraction prompt on synthetic Dutch SMP chunks with known moments.
+"""Evaluates the event-extraction prompt on synthetic Dutch SMP chunks with known story moments and known noise.
 
-Loads the real model on the GPU (stop other GPU work first). Run with `make prompt-eval`, optionally with
-a JSON file of real chunks (a list of chunks; each chunk a list of {index, start_time, end_time, text}):
+The prompt should report story events (players meeting, working together, fighting, trading, betraying) and leave
+out chat talk and routine gameplay. Loads the real model on the GPU (stop other GPU work first). Run with
+`make prompt-eval`, optionally with a JSON file of real chunks: {"context": {...}, "chunks": [[{index, start_time,
+end_time, text, speaker}, ...], ...]} (or a plain list of chunks):
     docker compose exec -T worker python3 /worker/prompt_eval.py /path/to/chunks.json
+With real chunks it also writes the storyline from their summaries, like the app does at the end of an analysis.
 """
 import json
 import sys
@@ -10,104 +13,83 @@ import time
 from collections import Counter
 
 import event_extractor
-from event_extractor import EventExtractor, parse_model_output, validate_events
+from event_extractor import EventExtractor, clean_text, parse_model_output, parse_summary, validate_events
 from model_manager import ModelManager
 
 PROMPTS = {"current": event_extractor.SYSTEM_PROMPT}
+CONTEXT = {"streamer": "Lisa", "players": ["Lisa", "Sam", "Kevin", "Alex", "DonKaaklijn", "Morrog", "Jeremy"]}
 
 
-def seg(start: float, text: str, length: float = 3.5) -> dict:
-    return {"start_time": start, "end_time": start + length, "text": text}
+def seg(start: float, speaker: str, text: str, length: float = 3.5) -> dict:
+    return {"start_time": start, "end_time": start + length, "speaker": speaker, "text": text}
 
 
+# Per case: the chunk, the story moments it must find (accepted types, lines), and the noise lines (chat talk, routine
+# gameplay) that must not become events.
 SYNTHETIC = {
-    "encounter_death": ([
-        seg(100, "Oké chat, we gaan even verder met de mine."),
-        seg(104, "Ik heb nog steeds geen iron, dat is echt irritant."),
-        seg(108, "Wacht, volgens mij zit daar iemand bij de ingang."),
-        seg(112, "Oh ja, dat is Alex! Hoi Alex!"),
-        seg(116, "Alex zegt dat hij op zoek is naar diamonds voor zijn beacon."),
-        seg(120, "Ik dacht dat jij bij het dorp zat, Alex?"),
-        seg(124, "Hij zegt dat het dorp is afgebrand. Wat? Door wie dan?"),
-        seg(128, "Oké, ik ga weer verder, doei Alex."),
-        seg(132, "Hmm, wat is dat geluid. Sssss."),
-        seg(136, "Pas op, een creeper! Nee nee nee!"),
-        seg(140, "Ik ben dood. Al mijn spullen liggen in de mine."),
-        seg(144, "Oké, dat was dom van mij, ik moet terug om mijn spullen te halen."),
+    "encounter_teamwork": ([
+        seg(100, "Lisa", "Oké chat, bedankt voor de follow Mark!"),
+        seg(104, "Lisa", "Ik ga even wat bomen hakken voor hout."),
+        seg(108, "Lisa", "Mijn axe is bijna kapot, balen."),
+        seg(112, "Lisa", "Wacht, daar komt iemand aanlopen. Is dat Alex?"),
+        seg(116, "Spreker 2", "Hé Lisa! Ik zoek al de hele dag naar je."),
+        seg(120, "Lisa", "Alex! Wat doe jij hier?"),
+        seg(124, "Spreker 2", "Ik heb een grote cave gevonden, ga je mee minen?"),
+        seg(128, "Lisa", "Ja, is goed, ik pak mijn spullen."),
+        seg(132, "Lisa", "We gaan samen de cave in, Alex loopt voorop met een fakkel."),
+        seg(136, "Spreker 2", "Kijk, iron, heel veel iron!"),
+        seg(140, "Lisa", "Chat vraagt hoe laat het is, het is half negen."),
     ], [
-        ({"player_encounter", "conversation"}, {3, 4}),
-        ({"death", "combat"}, {9, 10}),
-    ]),
-    "build_discovery": ([
-        seg(300, "Even kijken chat, wat zeggen jullie."),
-        seg(304, "Ja ik heb vandaag goed geslapen, dank je."),
-        seg(308, "Oké we gaan nu eindelijk de toren afmaken."),
-        seg(312, "Ik zet het laatste stuk van het dak erop, kijk."),
-        seg(316, "Klaar! De wizard toren is af, dit was echt drie streams werk."),
-        seg(320, "Ik ga even naar beneden de cave in voor wat coal."),
-        seg(324, "Wacht. Is dat... DIAMONDS! Vier stuks!"),
-        seg(328, "Dat zijn mijn eerste diamonds in deze wereld, eindelijk!"),
-        seg(332, "Even water drinken hoor."),
-        seg(336, "Oké waar waren we gebleven."),
+        ({"player_encounter", "teamwork"}, {3, 4, 5, 6, 7, 8}),
+    ], {0, 1, 2, 10}),
+    "betrayal_fight": ([
+        seg(300, "Lisa", "Kevin zei dat hij mijn kist zou bewaken."),
+        seg(304, "Lisa", "Maar kijk, de kist is leeg! Al mijn diamonds zijn weg."),
+        seg(308, "Lisa", "Daar loopt Kevin, met mijn diamond chestplate aan!"),
+        seg(312, "Kevin", "Haha, sorry Lisa, business is business."),
+        seg(316, "Lisa", "Kevin, kom hier! Ik sla hem met mijn zwaard."),
+        seg(320, "Lisa", "Ik heb Kevin gekilld, mijn spullen liggen op de grond."),
+        seg(324, "Lisa", "Wat een verrader. Oké chat, even rustig worden."),
+        seg(328, "Lisa", "Bedankt voor de vijf subs, Daan!"),
     ], [
-        ({"building"}, {3, 4}),
-        ({"discovery", "item"}, {6, 7}),
-    ]),
-    "item_trade": ([
-        seg(700, "Zo, terug in de base."),
-        seg(704, "Ik ga eerst even een diamond pickaxe craften met die diamonds."),
-        seg(708, "Yes, hij is gemaakt! Eindelijk een diamond pickaxe."),
-        seg(712, "Nu ga ik naar de villagers voor een mending boek."),
-        seg(716, "Deze librarian heeft mending voor tweeëntwintig emeralds."),
-        seg(720, "Gekocht! Mending is van mij."),
-        seg(724, "Chat vraagt of ik moe ben, nee hoor."),
+        ({"conflict", "combat", "death", "player_encounter"}, {1, 2, 3}),
+        ({"combat", "death", "conflict"}, {4, 5}),
+    ], {7}),
+    "routine_and_chat_only": ([
+        seg(500, "Lisa", "Hallo hallo chat, welkom bij de stream."),
+        seg(504, "Lisa", "Bedankt voor de follow, Lisa!"),
+        seg(508, "Lisa", "Ik ga eerst even een diamond pickaxe craften."),
+        seg(512, "Lisa", "Zo, hij is gemaakt. Nu nog wat coal smelten."),
+        seg(516, "Lisa", "Mijn pickaxe gaat kapot, ik moet een nieuwe maken."),
+        seg(520, "Lisa", "Even mijn inventory sorteren, wat een rommel."),
+        seg(524, "Lisa", "Wat zeg je, Mark? Nee ik heb nog niet gegeten."),
+        seg(528, "Lisa", "Ik hak nog even een paar bomen."),
+        seg(532, "Lisa", "Er komt een zombie aan, hebbes."),
+        seg(536, "Lisa", "Ik ga even water pakken, ben zo terug."),
+    ], [], set(range(10))),
+    "trade_and_plot": ([
+        seg(700, "Lisa", "Zo, ik ben bij het dorp van Sam."),
+        seg(704, "Sam", "Lisa, heb je de emeralds bij je?"),
+        seg(708, "Lisa", "Ja, twintig emeralds, zoals afgesproken."),
+        seg(712, "Sam", "Dan krijg jij dit mending boek van mij."),
+        seg(716, "Lisa", "Deal! Bedankt Sam."),
+        seg(720, "Sam", "Trouwens, Kevin wil morgen het kasteel van Morrog aanvallen."),
+        seg(724, "Lisa", "Wat? Dan moeten we Morrog waarschuwen!"),
+        seg(728, "Sam", "Niet zeggen dat je het van mij hebt."),
+        seg(732, "Lisa", "Chat, wat vinden jullie, moet ik het Morrog vertellen?"),
     ], [
-        ({"item"}, {1, 2}),
-        ({"item"}, {4, 5}),
-    ]),
-    "grief_fight": ([
-        seg(900, "Wat is er met mijn huis gebeurd?!"),
-        seg(904, "Iemand heeft mijn hele huis opgeblazen met TNT."),
-        seg(908, "Er ligt overal lava, alles is weg."),
-        seg(912, "Daar loopt Kevin weg, hij heeft TNT in zijn hand!"),
-        seg(916, "Kevin, kom hier! Ik sla hem met mijn zwaard."),
-        seg(920, "Ik heb Kevin gekilld, wat een idioot."),
-        seg(924, "Oké, even rustig worden chat."),
+        ({"trade"}, {1, 2, 3, 4}),
+        ({"plot", "conversation", "conflict"}, {5, 6, 7}),
+    ], set()),
+    "misspelled_player": ([
+        seg(900, "Lisa", "Wie is dat daar bij de spawn?"),
+        seg(904, "Spreker 3", "Hoi, ik ben Don K. Klein, ik ben nieuw hier."),
+        seg(908, "Lisa", "Welkom Don! Zal ik je de spawn laten zien?"),
+        seg(912, "Spreker 3", "Graag, ik weet nog niet waar ik moet bouwen."),
+        seg(916, "Lisa", "Kom, ik laat je een mooie plek bij de rivier zien."),
     ], [
-        ({"destruction"}, {1, 2}),
-        ({"combat", "death", "player_encounter"}, {4, 5}),
-    ]),
-    "nether_portal": ([
-        seg(1100, "Vandaag gaan we eindelijk naar de nether."),
-        seg(1104, "Ik zet de laatste obsidian neer en steek hem aan."),
-        seg(1108, "De nether portal werkt! Kijk hoe mooi."),
-        seg(1112, "Oké, we gaan erdoor."),
-        seg(1116, "Oh nee, een ghast schiet op mij!"),
-        seg(1120, "Ik schiet hem terug met mijn boog, hebbes, hij is dood."),
-    ], [
-        ({"building", "discovery"}, {1, 2}),
-        ({"combat"}, {4, 5}),
-    ]),
-    "talk_with_gameplay": ([
-        seg(1300, "Mijn tip voor jullie: bouw altijd je farm dicht bij je base."),
-        seg(1304, "Dan hoef je nooit ver te lopen voor eten."),
-        seg(1308, "Ik ga nu naar de end city die ik gisteren vond."),
-        seg(1312, "Ik open de kist en... een elytra! Ik heb een elytra!"),
-        seg(1316, "Dit is de beste dag ooit."),
-    ], [
-        ({"statement"}, {0, 1}),
-        ({"item", "discovery"}, {3}),
-    ]),
-    "filler_only": ([
-        seg(500, "Hallo hallo chat, welkom bij de stream."),
-        seg(504, "Bedankt voor de follow, Lisa!"),
-        seg(508, "Even kijken of het geluid goed staat."),
-        seg(512, "Hoor je me goed? Ja? Top."),
-        seg(516, "Ik ga even water pakken, ben zo terug."),
-        seg(520, "Zo, ik ben er weer."),
-        seg(524, "Wat zeg je, Mark? Nee ik heb nog niet gegeten."),
-        seg(528, "Oké, laten we zo beginnen."),
-    ], []),
+        ({"player_encounter", "teamwork", "conversation"}, {1, 2, 3, 4}),
+    ], set()),
 }
 
 
@@ -115,54 +97,75 @@ def indexed(chunk: list[dict]) -> list[dict]:
     return [{"index": i, **segment} for i, segment in enumerate(chunk)]
 
 
-def run(extractor: EventExtractor, model, tokenizer, chunk: list[dict]) -> tuple[list[dict], str]:
-    raw = extractor._generate(model, tokenizer, chunk)
+def run(extractor: EventExtractor, model, tokenizer, chunk: list[dict], context: dict) -> tuple[list[dict], str, str]:
+    raw = extractor._generate(model, tokenizer, chunk, context)
     try:
-        return validate_events(parse_model_output(raw), chunk), raw
+        payload = parse_model_output(raw)
+        return validate_events(payload, chunk), clean_text(parse_summary(payload), " ".join(segment["text"] for segment in chunk)), raw
     except ValueError as exc:
-        return [], f"INVALID: {exc}: {raw[:200]}"
+        return [], "", f"INVALID: {exc}: {raw[:200]}"
+
+
+def load_real(path: str) -> tuple[dict, list[list[dict]]]:
+    data = json.load(open(path))
+    if isinstance(data, list):
+        return {}, data
+    return data.get("context", {}), data["chunks"]
 
 
 def main() -> None:
-    variants = list(PROMPTS)
-    stream41 = json.load(open(sys.argv[1])) if len(sys.argv) > 1 else []
+    real_context, real_chunks = load_real(sys.argv[1]) if len(sys.argv) > 1 else ({}, [])
     extractor = EventExtractor(ModelManager(release_memory=lambda: None))
     model, tokenizer = extractor._load()
-    for name in variants:
-        event_extractor.SYSTEM_PROMPT = PROMPTS[name]
+    for name, prompt in PROMPTS.items():
+        event_extractor.SYSTEM_PROMPT = prompt
         started = time.time()
         print(f"\n=========== {name} ===========")
-        hits = expected_total = false_events = type_hits = extra_events = 0
-        for label, (chunk, expected) in SYNTHETIC.items():
-            events, raw = run(extractor, model, tokenizer, indexed(chunk))
+        hits = expected_total = noise_events = extra_events = 0
+        for label, (chunk, expected, noise) in SYNTHETIC.items():
+            events, summary, raw = run(extractor, model, tokenizer, indexed(chunk), CONTEXT)
             expected_total += len(expected)
-            # A moment counts as found when an event covers its lines, whatever the type; the type is scored separately.
-            matched = [any(set(e["segment_indexes"]) & want for e in events) for types, want in expected]
+            # A moment counts as found when an event covers most of its lines (whatever the type).
+            matched = [any(len(set(e["segment_indexes"]) & want) * 2 >= len(want) for e in events) for _, want in expected]
             typed = [any(e["type"] in types and set(e["segment_indexes"]) & want for e in events) for types, want in expected]
+            # An event mostly on chat or routine lines is noise.
+            noisy = [e for e in events if len(set(e["segment_indexes"]) & noise) * 2 > len(e["segment_indexes"])]
             hits += sum(matched)
-            type_hits += sum(typed)
-            extra_events += max(0, len(events) - len(expected)) if expected else 0
-            if not expected:
-                false_events += len(events)
-            print(f"  [{label}] expected {len(expected)}, matched {sum(matched)}, got {len(events)}" + ("" if events or not raw.startswith("INVALID") else " " + raw))
+            noise_events += len(noisy)
+            extra_events += max(0, len(events) - len(expected) - len(noisy))
+            print(f"  [{label}] expected {len(expected)}, matched {sum(matched)} (type right {sum(typed)}), got {len(events)}, noise {len(noisy)}" + ("" if not raw.startswith("INVALID") else " " + raw))
             for e in events:
                 print(f"      {e['type']:<16} segs={e['segment_indexes']} conf={e['confidence']:.2f} {e['title']}")
-        per_chunk, seg_counts, types, invalid = [], [], Counter(), 0
-        print("  [real chunks]" if stream41 else "  [no real chunks given]")
-        for number, chunk in enumerate(stream41):
-            events, raw = run(extractor, model, tokenizer, chunk)
+            print(f"      summary: {summary or '(leeg)'}")
+        print(f"  SUMMARY {name}: story moments {hits}/{expected_total}, noise events {noise_events}, extra events {extra_events}, {time.time() - started:.0f}s")
+
+        if not real_chunks:
+            print("  [no real chunks given]")
+            continue
+        print("  [real chunks]")
+        started = time.time()
+        parts, all_events, sizes, types, invalid = [], [], [], Counter(), 0
+        for number, chunk in enumerate(real_chunks):
+            chunk_started = time.time()
+            events, summary, raw = run(extractor, model, tokenizer, chunk, real_context)
             invalid += raw.startswith("INVALID")
-            per_chunk.append(len(events))
+            print(f"    c{number} [{event_extractor.clock(chunk[0]['start_time'])}-{event_extractor.clock(chunk[-1]['end_time'])}] {len(chunk)} lines, {len(events)} events, {time.time() - chunk_started:.0f}s" + (" " + raw if raw.startswith("INVALID") else ""))
+            print(f"      summary: {summary or '(leeg)'}")
             for e in events:
-                seg_counts.append(len(e["segment_indexes"]))
+                sizes.append(len(e["segment_indexes"]))
                 types[e["type"]] += 1
-                print(f"      c{number} {e['type']:<16} {len(e['segment_indexes']):>2}/{len(chunk)} segs conf={e['confidence']:.2f} {e['title']}")
-        avg_segs = sum(seg_counts) / len(seg_counts) if seg_counts else 0
-        capped = [count for count in seg_counts if count <= 12]
-        print(f"  with 12-segment cap: {len(capped)} events kept, avg segs/event {sum(capped) / len(capped) if capped else 0:.1f}")
-        print(f"  SUMMARY {name}: synthetic recall {hits}/{expected_total} (type right {type_hits}), extra events {extra_events}, false events on filler {false_events}, "
-              f"real chunk events {sum(per_chunk)} (per chunk {per_chunk}), avg segs/event {avg_segs:.1f}, max {max(seg_counts, default=0)}, "
-              f"invalid chunks {invalid}, types {dict(types)}, {time.time() - started:.0f}s")
+                print(f"      {e['type']:<16} {len(e['segment_indexes']):>2} segs conf={e['confidence']:.2f} {e['title']} — {e['description']}")
+                all_events.append({"start_time": chunk[e["segment_indexes"][0]]["start_time"], "title": e["title"], "description": e["description"]})
+            if summary:
+                parts.append({"start_time": chunk[0]["start_time"], "end_time": chunk[-1]["end_time"], "summary": summary})
+        story_started = time.time()
+        # The model is loaded here directly, not through the ModelManager, so write the story with it too.
+        try:
+            story = extractor.write_story(model, tokenizer, parts, all_events, real_context)
+        except ValueError as exc:
+            story = {"summary": f"INVALID: {exc}", "players": []}
+        print(f"  STORY ({time.time() - story_started:.0f}s): {story.get('summary')}\n  players: {story.get('players')}")
+        print(f"  REAL {name}: {len(all_events)} events in {len(real_chunks)} chunks, segs/event avg {sum(sizes) / len(sizes) if sizes else 0:.1f} max {max(sizes, default=0)}, types {dict(types)}, invalid chunks {invalid}, {time.time() - started:.0f}s")
 
 
 if __name__ == "__main__":

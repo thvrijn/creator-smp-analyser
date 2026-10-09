@@ -218,6 +218,12 @@ class StreamController extends Controller
         if ($search !== null) {
             $segmentsQuery->where('text', 'ilike', '%'.$search.'%');
         }
+        // ?speaker=n: only what that speaker says (a click on their chip in the Transcript tab).
+        $speaker = filter_var($request->query('speaker'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        $speaker = $speaker === false ? null : $speaker;
+        if ($speaker !== null) {
+            $segmentsQuery->where('speaker', $speaker);
+        }
 
         // Selecting an event opens the (unfiltered) transcript page that contains its first segment. ?at= (seconds in
         // the media file, from a moment linked in another stream) does the same for the segment playing at that time.
@@ -227,7 +233,7 @@ class StreamController extends Controller
             $atSegment = $stream->transcriptSegments()->where('end_time', '>', (float) $request->query('at'))->orderBy('start_time')->orderBy('id')->first();
             $highlighted = $atSegment !== null ? [$atSegment->id] : [];
         }
-        if ($search === null && $highlighted !== [] && ! $request->has('page')) {
+        if ($search === null && $speaker === null && $highlighted !== [] && ! $request->has('page')) {
             $first = $stream->transcriptSegments()->whereKey($highlighted)->orderBy('start_time')->orderBy('id')->first();
             $before = $stream->transcriptSegments()
                 ->where(fn ($query) => $query->where('start_time', '<', $first->start_time)
@@ -244,6 +250,10 @@ class StreamController extends Controller
                 ...StreamResource::make($stream)->resolve(),
                 'duration_seconds' => $totalDuration === null ? null : (float) $totalDuration,
                 'segment_count' => $stream->transcript_segments_count,
+                // The storyline written by the analysis (what happened in the game).
+                'story_summary' => $stream->story_summary,
+                'story_players' => $stream->story_players ?? [],
+                'story_parts' => $stream->story_parts ?? [],
             ],
             'speakers' => app(StreamSpeakers::class)->list($stream),
             // For naming a speaker after a player.
@@ -270,6 +280,8 @@ class StreamController extends Controller
                     'end_time' => (float) $segment->end_time,
                     'text' => $segment->text,
                     'speaker' => $segment->speaker,
+                    // Set when the text was corrected by hand: what speech recognition wrote.
+                    'original_text' => $segment->original_text,
                 ])->values()->all(),
                 'current_page' => $paginator->currentPage(),
                 'last_page' => $paginator->lastPage(),
@@ -284,6 +296,7 @@ class StreamController extends Controller
                 'active' => $link['active'],
             ])->values()->all(),
             'search' => $search ?? '',
+            'speaker_filter' => $speaker,
         ]);
     }
 

@@ -119,4 +119,39 @@ class SpeakerCorrectionTest extends TestCase
 
         $this->assertSame(0, $this->stream->speakerNames()->count());
     }
+
+    public function test_the_transcript_can_show_one_speaker_only(): void
+    {
+        $this->get("/streams/{$this->stream->id}?tab=transcript&speaker=2")->assertInertia(fn (Assert $page) => $page
+            ->where('speaker_filter', 2)
+            ->where('segments.total', 1)
+            ->where('segments.data.0.text', 'Zin 40'));
+        $this->get("/streams/{$this->stream->id}?tab=transcript&speaker=0&search=zin")->assertInertia(fn (Assert $page) => $page
+            ->where('segments.total', 1)
+            ->where('segments.data.0.text', 'Zin 0'));
+        $this->get("/streams/{$this->stream->id}?tab=transcript&speaker=abc")->assertInertia(fn (Assert $page) => $page
+            ->where('speaker_filter', null)
+            ->where('segments.total', 4));
+    }
+
+    public function test_a_line_can_be_corrected_and_put_back(): void
+    {
+        $segment = $this->stream->transcriptSegments()->where('speaker', 1)->first();
+
+        $this->put("/segments/{$segment->id}/text", ['text' => '  Zin dertig, verbeterd.  '])->assertSessionHas('success');
+        $this->assertSame(['Zin dertig, verbeterd.', 'Zin 30'], [$segment->fresh()->text, $segment->fresh()->original_text]);
+
+        // A second correction keeps what was recognised.
+        $this->put("/segments/{$segment->id}/text", ['text' => 'Zin dertig.']);
+        $this->assertSame('Zin 30', $segment->fresh()->original_text);
+        $this->get("/streams/{$this->stream->id}?tab=transcript&search=dertig")->assertInertia(fn (Assert $page) => $page
+            ->where('segments.data.0.text', 'Zin dertig.')
+            ->where('segments.data.0.original_text', 'Zin 30'));
+
+        $this->put("/segments/{$segment->id}/text", ['text' => 'Zin 30']);
+        $this->assertSame(['Zin 30', null], [$segment->fresh()->text, $segment->fresh()->original_text]);
+
+        $this->put("/segments/{$segment->id}/text", ['text' => '   '])->assertSessionHasErrors('text');
+        $this->assertSame('Zin 30', $segment->fresh()->text);
+    }
 }

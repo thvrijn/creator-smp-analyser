@@ -339,7 +339,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         self.send_json({"status": "ok", "name": registration.worker_name(), "loaded_models": MODELS.loaded_models, "busy": registration.ACTIVE.busy, "diarization": diarization.enabled()})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/transcribe", "/extract-events"}:
+        if self.path not in {"/transcribe", "/extract-events", "/summarize-story"}:
             self.send_error(404, "Not found")
             return
         try:
@@ -349,6 +349,8 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             with registration.ACTIVE.track():
                 if self.path == "/extract-events":
                     self.handle_extract_events()
+                elif self.path == "/summarize-story":
+                    self.handle_summarize_story()
                 else:
                     self.handle_transcribe()
         finally:
@@ -372,18 +374,52 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             segments = payload.get("segments", []) if isinstance(payload, dict) else None
             if not isinstance(segments, list):
                 raise ValueError("segments moet een lijst zijn")
+            context = self.context(payload)
         except (TypeError, ValueError) as exc:
             self.send_json_error(f"Ongeldig event-extractieverzoek: {exc}", status=400)
             return
         try:
-            events = _event_extractor.extract(segments)
+            result = _event_extractor.extract(segments, context)
         except (ProcessingError, RuntimeError, ValueError) as exc:
             self.send_json_error(str(exc), status=422)
             return
         except Exception as exc:
             self.send_json_error(f"Workerfout: {exc}", status=500)
             return
-        self.send_json({"events": events})
+        self.send_json(result)
+
+    def handle_summarize_story(self) -> None:
+        # The storyline of a whole stream from its part summaries and events; plain JSON like /extract-events.
+        try:
+            payload = self.read_payload()
+            parts = payload.get("parts", []) if isinstance(payload, dict) else None
+            events = payload.get("events", []) if isinstance(payload, dict) else None
+            if not isinstance(parts, list) or not isinstance(events, list):
+                raise ValueError("parts en events moeten lijsten zijn")
+            context = self.context(payload)
+        except (TypeError, ValueError) as exc:
+            self.send_json_error(f"Ongeldig samenvattingsverzoek: {exc}", status=400)
+            return
+        try:
+            result = _event_extractor.summarize_story(parts, events, context)
+        except (ProcessingError, RuntimeError, ValueError) as exc:
+            self.send_json_error(str(exc), status=422)
+            return
+        except Exception as exc:
+            self.send_json_error(f"Workerfout: {exc}", status=500)
+            return
+        self.send_json(result)
+
+    @staticmethod
+    def context(payload: dict[str, Any]) -> dict[str, Any]:
+        """Who streams (the POV) and which players exist, so the model can name them correctly."""
+        context = payload.get("context") or {}
+        if not isinstance(context, dict):
+            raise ValueError("context moet een object zijn")
+        players = context.get("players") or []
+        if not isinstance(players, list):
+            raise ValueError("context.players moet een lijst zijn")
+        return {"streamer": str(context.get("streamer") or ""), "players": [str(name) for name in players]}
 
     def handle_transcribe(self) -> None:
         # Validate before the NDJSON stream starts, so request errors get a normal HTTP status.

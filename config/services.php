@@ -31,10 +31,13 @@ return [
         'model' => env('EVENT_MODEL', 'unsloth/Qwen3-8B-bnb-4bit'),
         'device' => env('EVENT_DEVICE', 'cuda'),
         'quantization' => env('EVENT_QUANTIZATION', '4bit'),
-        'max_tokens' => (int) env('EVENT_MAX_TOKENS', 768),
-        'max_segments' => (int) env('EVENT_MAX_SEGMENTS', 12),
-        'chunk_seconds' => (float) env('EVENT_CHUNK_SECONDS', 90),
-        'overlap_seconds' => (float) env('EVENT_CHUNK_OVERLAP_SECONDS', 15),
+        'max_tokens' => (int) env('EVENT_MAX_TOKENS', 1024),
+        // A story event is a happening, not one remark (min), and not a summary of the whole 5-minute part (max; a 5-minute part has ~150-250 lines).
+        'min_segments' => (int) env('EVENT_MIN_SEGMENTS', 2),
+        'max_segments' => (int) env('EVENT_MAX_SEGMENTS', 200),
+        // Parts of 5 minutes: long enough for the model to see a whole happening, short enough for 8 GB of VRAM.
+        'chunk_seconds' => (float) env('EVENT_CHUNK_SECONDS', 300),
+        'overlap_seconds' => (float) env('EVENT_CHUNK_OVERLAP_SECONDS', 60),
     ],
     'twitch' => [
         'client_id' => env('TWITCH_CLIENT_ID'),

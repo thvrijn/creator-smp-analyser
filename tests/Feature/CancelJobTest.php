@@ -127,7 +127,7 @@ class CancelJobTest extends TestCase
         $worker->shouldReceive('extract')->once()->andReturnUsing(function () use ($stream): array {
             $this->post("/streams/{$stream->id}/cancel/event_extraction")->assertSessionHas('success');
 
-            return [];
+            return ['events' => [], 'summary' => ''];
         });
 
         (new ExtractStreamEventsJob($stream->id))->handle($worker, app(WorkerPool::class), app(StreamJobCanceller::class));

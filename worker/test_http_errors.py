@@ -59,12 +59,26 @@ class WorkerHttpErrorTest(unittest.TestCase):
 
     def test_with_a_token_set_requests_without_it_are_refused(self) -> None:
         with patch.dict(os.environ, {"WORKER_TOKEN": "secret"}), \
-                patch.object(entrypoint._event_extractor, "extract", return_value=[]):
+                patch.object(entrypoint._event_extractor, "extract", return_value={"events": [], "summary": ""}):
             status, _, body = self.post("/extract-events", json.dumps({"segments": []}))
             self.assertEqual(status, 401)
             self.assertIn("token", json.loads(body)["error"])
             status, _, body = self.post("/extract-events", json.dumps({"segments": []}), {"Authorization": "Bearer secret"})
-            self.assertEqual((status, json.loads(body)), (200, {"events": []}))
+            self.assertEqual((status, json.loads(body)), (200, {"events": [], "summary": ""}))
+
+    def test_extraction_gets_the_context_and_the_story_endpoint_answers_json(self) -> None:
+        with patch.object(entrypoint._event_extractor, "extract", return_value={"events": [], "summary": "Niets."}) as extract:
+            status, _, body = self.post("/extract-events", json.dumps({"segments": [{"text": "x"}], "context": {"streamer": "Morrog", "players": ["Morrog", "Jeremy"]}}))
+        self.assertEqual((status, json.loads(body)), (200, {"events": [], "summary": "Niets."}))
+        self.assertEqual(extract.call_args.args[1], {"streamer": "Morrog", "players": ["Morrog", "Jeremy"]})
+
+        story = {"summary": "Morrog ontmoet Jeremy.", "players": ["Jeremy"]}
+        with patch.object(entrypoint._event_extractor, "summarize_story", return_value=story):
+            status, _, body = self.post("/summarize-story", json.dumps({"parts": [{"start_time": 0, "end_time": 300, "summary": "x"}], "events": []}))
+        self.assertEqual((status, json.loads(body)), (200, story))
+        for body in ["not json", json.dumps({"parts": "x", "events": []}), json.dumps({"parts": [], "events": [], "context": {"players": "x"}})]:
+            status, _, _ = self.post("/summarize-story", body)
+            self.assertEqual(status, 400, body)
 
 
 if __name__ == "__main__":

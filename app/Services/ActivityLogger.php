@@ -29,6 +29,7 @@ class ActivityLogger
         'streams.speakers.update' => 'Spreker benoemd',
         'streams.speakers.merge' => 'Sprekers samengevoegd',
         'segments.speaker' => 'Spreker van een zin aangepast',
+        'segments.text' => 'Tekst van een zin aangepast',
         'players.store' => 'Speler toegevoegd',
         'players.update' => 'Speler bewerkt',
         'players.destroy' => 'Speler verwijderd',

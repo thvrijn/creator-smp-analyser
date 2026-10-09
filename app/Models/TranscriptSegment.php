@@ -17,6 +17,7 @@ class TranscriptSegment extends Model
         'end_time',
         'text',
         'speaker',
+        'original_text',
     ];
 
     protected function casts(): array

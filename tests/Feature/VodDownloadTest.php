@@ -41,7 +41,7 @@ class VodDownloadTest extends TestCase
     {
         Process::fake(function (PendingProcess $process) use ($chapters, $ytDlpFails) {
             if ($process->command[0] === 'ffmpeg') {
-                file_put_contents(end($process->command), 'cut audio');
+                file_put_contents(end($process->command), 'remuxed audio');
 
                 return Process::result();
             }
@@ -67,7 +67,8 @@ class VodDownloadTest extends TestCase
 
         // From the CreatorSMP chapter (420 s) to the server closing at midnight (22:00 UTC, 18801 s); the file stays whole.
         Process::assertRan(fn (PendingProcess $process) => $process->command[0] === 'yt-dlp' && in_array('ba/worst', $process->command, true));
-        Process::assertDidntRun(fn (PendingProcess $process) => $process->command[0] === 'ffmpeg');
+        // Rewritten in place as a plain MP4 (AudioRemux), so browsers seek to the transcript's times.
+        Process::assertRan(fn (PendingProcess $process) => $process->command[0] === 'ffmpeg' && in_array('+faststart', $process->command, true));
         $stream->refresh();
         $this->assertSame('completed', $stream->video_download_status);
         $this->assertSame("streams/{$stream->id}/video/twitch-3001.mp4", $stream->video_path);
@@ -178,5 +179,38 @@ class VodDownloadTest extends TestCase
         $live = $stream->player->streams()->create(['title' => 'Dag 2', 'source' => 'twitch', 'twitch_video_id' => '4001', 'started_at' => now()]);
         $this->post("/streams/{$live->id}/download-audio")->assertSessionHas('error', "Deze stream is nog live. Haal de audio op als hij voorbij is, en sync de VOD's dan eerst opnieuw.");
         Queue::assertPushed(DownloadVodJob::class, 1);
+    }
+
+    public function test_existing_twitch_recordings_are_rewritten_as_plain_mp4s(): void
+    {
+        $recording = $this->vod();
+        $plain = $recording->replicate()->fill(['twitch_video_id' => '3002']);
+        $plain->save();
+        $busy = $recording->replicate()->fill(['twitch_video_id' => '3003']);
+        $busy->save();
+        foreach ([$recording, $plain, $busy] as $stream) {
+            Storage::put("streams/{$stream->id}/video/twitch-3001.mp4", 'hls audio');
+            $stream->update(['video_path' => "streams/{$stream->id}/video/twitch-3001.mp4", 'video_file_size' => 9]);
+        }
+        $busy->update(['transcription_status' => 'processing']);
+        Process::fake(function (PendingProcess $process) use ($recording) {
+            if ($process->command[0] === 'ffprobe') {
+                // Only the first stream's file is still Twitch's HLS recording (first sample at 62 s).
+                $start = str_contains(end($process->command), "streams/{$recording->id}/") ? '62.017' : '0.000';
+
+                return Process::result(output: json_encode(['streams' => [['start_time' => $start]], 'format' => ['tags' => ['compatible_brands' => 'isommp42']]]));
+            }
+            file_put_contents(end($process->command), 'plain mp4 audio');
+
+            return Process::result();
+        });
+
+        $this->artisan('streams:normalize-audio')->assertSuccessful();
+
+        $this->assertSame('plain mp4 audio', Storage::get($recording->fresh()->video_path));
+        $this->assertSame(15, $recording->fresh()->video_file_size);
+        $this->assertSame('hls audio', Storage::get($plain->fresh()->video_path));
+        $this->assertSame('hls audio', Storage::get($busy->fresh()->video_path));
+        Process::assertRanTimes(fn (PendingProcess $process) => $process->command[0] === 'ffmpeg', 1);
     }
 }

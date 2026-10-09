@@ -5,23 +5,26 @@ import FlashMessages from '../../Components/FlashMessages.vue';
 import AudioPlayer from '../../Components/AudioPlayer.vue';
 import TwitchPlayer from '../../Components/TwitchPlayer.vue';
 import PlayerAvatar from '../../Components/PlayerAvatar.vue';
+import SpeakerEditor from '../../Components/SpeakerEditor.vue';
+import SpeakerText from '../../Components/SpeakerText.vue';
+import { matchReason, type Speaker } from '../../composables/speakers';
 import { streamDurationLabel, cancelTask, canCancel, isCancelling, downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel , type CancellableTask } from '../../composables/streamStatus';
 import AppLayout from '../../Layouts/AppLayout.vue';
 import { formatDate, type Stream } from '../../types/streams';
 
-type StreamDetail = Stream & { duration_seconds: number | null; segment_count: number };
+// story_*: the storyline of the stream written by the analysis, and a summary per part (file times).
+type StoryPart = { start_time: number; end_time: number; summary: string };
+type StreamDetail = Stream & { duration_seconds: number | null; segment_count: number; story_summary: string | null; story_players: string[]; story_parts: StoryPart[] };
 type StreamEvent = { id: number; type: string; title: string; description: string; start_time: number; end_time: number; confidence: number; segment_count: number };
-type Segment = { id: number; start_time: number; end_time: number; text: string; speaker: number | null };
+// original_text: what speech recognition wrote, when the text was corrected by hand.
+type Segment = { id: number; start_time: number; end_time: number; text: string; speaker: number | null; original_text: string | null };
 type PaginationLink = { url: string | null; label: string; active: boolean };
 type Clip = { id: number; event_id: number | null; title: string; start_seconds: number; end_seconds: number };
-// source: named/unknown by hand, matched (by text: the same sentences as that player in their own stream, see
-// SpeakerTextMatches; or by voice, VoiceProfiles, with its similarity), or default (0 = the streamer).
-type Speaker = { speaker: number; name: string; source: 'named' | 'unknown' | 'matched' | 'default'; named: boolean; player_id: number | null; label: string | null; matched_by: 'text' | 'voice' | null; similarity: number | null; text_hits: number | null; text_stream_id: number | null; seconds: number; segment_count: number };
 // The same moment in another player's stream (SharedMoments): their event at that time, or else the time in their file.
 type SharedMoment = { stream_id: number; stream_title: string; player: { id: number; name: string; photo_url: string | null }; event_id: number | null; event_title: string | null; at: number; reasons: ('voice' | 'named' | 'voice_there' | 'named_there')[] };
 type Pagination = { data: Segment[]; current_page: number; last_page: number; per_page: number; total: number; from: number | null; to: number | null };
 
-const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speakers: Speaker[]; players: { id: number; name: string }[]; shared_moments: Record<number, SharedMoment[]> }>();
+const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speaker_filter: number | null; speakers: Speaker[]; players: { id: number; name: string }[]; shared_moments: Record<number, SharedMoment[]> }>();
 const stream = reactive<StreamDetail>({ ...props.stream });
 watch(() => props.stream, (value) => { Object.assign(stream, value); }, { deep: true });
 const search = ref(props.search);
@@ -35,11 +38,6 @@ const speakerLabel = (speaker: number) => props.speakers.find((item) => item.spe
 const speakerClass = (speaker: number) => 'segment-speaker-' + (speaker === 0 ? 'main' : speaker % 6);
 const findSpeaker = (speaker: number) => props.speakers.find((candidate) => candidate.speaker === speaker);
 const isMatched = (speaker: number) => findSpeaker(speaker)?.source === 'matched';
-const similarityLabel = (item: Speaker) => Math.round((item.similarity ?? 0) * 100) + '% gelijk';
-// Why a speaker is shown as a player: what they say, or how they sound.
-const matchReason = (item: Speaker) => item.matched_by === 'text'
-    ? 'zegt ' + item.text_hits + ' keer hetzelfde als ' + item.name + ' op dat moment in diens eigen stream'
-    : 'stem ' + similarityLabel(item);
 const speakerTitle = (speaker: number) => {
     const item = findSpeaker(speaker);
     if (item?.source === 'matched') return 'Herkend: ' + matchReason(item) + '. Klik om te bevestigen of te wijzigen.';
@@ -48,38 +46,35 @@ const speakerTitle = (speaker: number) => {
 };
 
 const editingSpeaker = ref<number | null>(null);
-const speakerForm = reactive({ choice: '' as string, label: '', mergeInto: '' as string });
+// From a speaker chip in the Transcript tab the editor sits above the transcript; from "Spreker n" in an event or the
+// storyline (SpeakerText) it opens as a pop-up, on any tab.
+const editorInModal = ref(false);
 const editSpeaker = (item: Speaker) => {
+    editorInModal.value = false;
     editingSpeaker.value = editingSpeaker.value === item.speaker ? null : item.speaker;
-    speakerForm.choice = item.source === 'unknown' ? 'unknown' : item.source !== 'named' ? '' : item.player_id !== null ? String(item.player_id) : 'label';
-    speakerForm.label = item.label ?? '';
-    speakerForm.mergeInto = '';
 };
-const speakerOptions = { preserveScroll: true, preserveState: true, only: ['speakers', 'segments', 'flash', 'errors'] };
-const saveSpeaker = () => {
-    if (editingSpeaker.value === null) return;
-    const body = speakerForm.choice === 'label' ? { label: speakerForm.label } : speakerForm.choice === 'unknown' ? { unknown: true } : { player_id: speakerForm.choice === '' ? null : Number(speakerForm.choice) };
-    router.put(streamUrl + '/speakers/' + editingSpeaker.value, body, { ...speakerOptions, onSuccess: () => { editingSpeaker.value = null; } });
+// at: the moment the text is about (file time), to listen back who it is.
+const pickedAt = ref<number | null>(null);
+const pickSpeaker = (speaker: number, at: number | null = null) => {
+    editorInModal.value = true;
+    pickedAt.value = at;
+    editingSpeaker.value = speaker;
 };
 const editedSpeaker = computed(() => editingSpeaker.value === null ? undefined : findSpeaker(editingSpeaker.value));
-const automaticLabel = computed(() => {
-    const item = editedSpeaker.value;
-    if (!item) return 'Automatisch';
-    if (item.source === 'matched') return 'Automatisch: herkend als ' + item.name + ' (' + matchReason(item) + ')';
-    return item.speaker === 0 ? 'Automatisch: de streamer (' + stream.player.name + ')' : 'Automatisch: herkennen aan de stem';
-});
-// A voice match is a guess until confirmed; confirming makes it a known voice of that player.
-const confirmMatch = () => {
-    const item = editedSpeaker.value;
-    if (!item || item.player_id === null) return;
-    router.put(streamUrl + '/speakers/' + item.speaker, { player_id: item.player_id }, { ...speakerOptions, onSuccess: () => { editingSpeaker.value = null; } });
+const speakerOptions = { preserveScroll: true, preserveState: true, only: ['speakers', 'segments', 'flash', 'errors'] };
+
+// Correcting the text of a line (✎ or a double click): Enter saves, Escape cancels, and the recognised text can be put back.
+const editingTextId = ref<number | null>(null);
+const textDraft = ref('');
+const startEditText = async (segment: Segment) => {
+    editingTextId.value = segment.id;
+    textDraft.value = segment.text;
+    await nextTick();
+    document.querySelector<HTMLTextAreaElement>('.segment-text-editor textarea')?.focus();
 };
-const mergeSpeaker = () => {
-    if (editingSpeaker.value === null || speakerForm.mergeInto === '') return;
-    const from = speakerLabel(editingSpeaker.value);
-    const into = speakerLabel(Number(speakerForm.mergeInto));
-    if (!window.confirm('Alles van "' + from + '" bij "' + into + '" zetten? Dat kan niet ongedaan worden gemaakt.')) return;
-    router.post(streamUrl + '/speakers/' + editingSpeaker.value + '/merge', { into: Number(speakerForm.mergeInto) }, { ...speakerOptions, onSuccess: () => { editingSpeaker.value = null; } });
+const saveSegmentText = (segment: Segment, text: string) => {
+    if (text.trim() === '' || text.trim() === segment.text) { editingTextId.value = null; return; }
+    router.put('/segments/' + segment.id + '/text', { text }, { preserveScroll: true, preserveState: true, only: ['segments', 'flash', 'errors'], onSuccess: () => { editingTextId.value = null; } });
 };
 
 // One segment to another speaker: a small menu on its speaker label.
@@ -112,16 +107,29 @@ const selectedEvent = computed(() => props.events.find((event) => event.id === p
 
 // The tab lives in the URL (?tab=), so links and the back button work. Without one, a selected
 // event, search or page means the transcript is what you came for.
-type Tab = 'events' | 'transcript' | 'clips';
-const tabs: Tab[] = ['events', 'transcript', 'clips'];
-const tabLabels: Record<Tab, string> = { events: 'Events', transcript: 'Transcript', clips: 'Clips' };
+type Tab = 'story' | 'events' | 'transcript' | 'clips';
+const tabs: Tab[] = ['story', 'events', 'transcript', 'clips'];
+const tabLabels: Record<Tab, string> = { story: 'Verhaal', events: 'Events', transcript: 'Transcript', clips: 'Clips' };
+const hasStory = computed(() => Boolean(stream.story_summary) || stream.story_parts.length > 0);
 const page = usePage();
 const query = computed(() => Object.fromEntries(new URL(page.url, window.location.origin).searchParams));
-const activeTab = computed<Tab>(() => tabs.includes(query.value.tab as Tab) ? query.value.tab as Tab : (query.value.clip ? 'clips' : query.value.event || query.value.at || query.value.search || query.value.page ? 'transcript' : 'events'));
-const tabCount = (tab: Tab) => ({ events: props.events.length, transcript: stream.segment_count, clips: clips.value.length })[tab];
+const activeTab = computed<Tab>(() => tabs.includes(query.value.tab as Tab) ? query.value.tab as Tab : (query.value.clip ? 'clips' : query.value.event || query.value.at || query.value.search || query.value.page ? 'transcript' : hasStory.value ? 'story' : 'events'));
+const tabCount = (tab: Tab) => ({ story: stream.story_parts.length, events: props.events.length, transcript: stream.segment_count, clips: clips.value.length })[tab];
+// The storyline in paragraphs, and the players in it linked to their page when the name is known.
+const storyParagraphs = computed(() => (stream.story_summary ?? '').split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean));
+const storyPlayer = (name: string) => props.players.find((player) => player.name.toLowerCase() === name.toLowerCase());
+const transcriptAt = (seconds: number) => streamUrl + '?' + new URLSearchParams({ tab: 'transcript', at: String(seconds) });
 const tabUrl = (tab: Tab) => streamUrl + '?' + new URLSearchParams({ ...query.value, tab });
 
-const submitSearch = () => { router.get(streamUrl, { tab: 'transcript', ...(search.value.trim() ? { search: search.value.trim() } : {}) }, { preserveState: true, preserveScroll: true, replace: true }); };
+// The transcript filters: a search term and/or one speaker (?speaker=n, a click on their chip).
+const transcriptQuery = (speaker: number | null) => ({ tab: 'transcript', ...(search.value.trim() ? { search: search.value.trim() } : {}), ...(speaker !== null ? { speaker: String(speaker) } : {}) });
+const submitSearch = () => { router.get(streamUrl, transcriptQuery(props.speaker_filter), { preserveState: true, preserveScroll: true, replace: true }); };
+// A click on a speaker shows only what they say; clicking the same speaker again shows everyone.
+const filterSpeaker = (speaker: number | null) => {
+    editingSpeaker.value = null;
+    router.get(streamUrl, transcriptQuery(speaker === props.speaker_filter ? null : speaker), { preserveState: true, preserveScroll: true });
+};
+const filteredSpeaker = computed(() => props.speaker_filter === null ? undefined : findSpeaker(props.speaker_filter));
 const clearSelection = () => { router.get(streamUrl, { tab: 'transcript' }, { preserveState: true, preserveScroll: true, replace: true }); };
 // Selecting an event opens it in the transcript; clicking the selected event again deselects it.
 const selectEvent = (event: StreamEvent) => {
@@ -129,16 +137,11 @@ const selectEvent = (event: StreamEvent) => {
     router.get(streamUrl, deselect ? {} : { event: event.id }, { preserveState: true, preserveScroll: true, only: ['selected_event_id', 'highlighted_segment_ids', 'segments', 'pagination', 'search'] });
 };
 
-// Bring the first highlighted segment into view inside the transcript list.
+// Bring the first highlighted segment into view (the page scrolls, not the list).
 const transcriptList = ref<HTMLElement | null>(null);
 const scrollToHighlight = async () => {
     await nextTick();
-    const list = transcriptList.value;
-    const segment = list?.querySelector<HTMLElement>('.segment-highlight');
-    if (!list || !segment) return;
-    // Scroll only the list, never the page around it (on small screens the page scrolls instead).
-    if (list.scrollHeight > list.clientHeight) list.scrollTop = segment.offsetTop - (list.clientHeight - segment.clientHeight) / 2;
-    else segment.scrollIntoView({ block: 'center' });
+    transcriptList.value?.querySelector<HTMLElement>('.segment-highlight')?.scrollIntoView({ block: 'center' });
 };
 watch([() => props.highlighted_segment_ids, activeTab], () => { void scrollToHighlight(); });
 
@@ -156,10 +159,12 @@ const playingSegmentId = computed(() => {
 watch(playingSegmentId, async (id) => {
     if (id === null || !audioPlaying.value) return;
     await nextTick();
-    const list = transcriptList.value;
-    const segment = list?.querySelector<HTMLElement>('.segment-playing');
-    if (!list || !segment || list.scrollHeight <= list.clientHeight) return;
-    list.scrollTop = segment.offsetTop - (list.clientHeight - segment.clientHeight) / 2;
+    const segment = transcriptList.value?.querySelector<HTMLElement>('.segment-playing');
+    if (!segment) return;
+    // Follow only while the listener is reading along: the segment just moved past the bottom of the screen. Somebody
+    // who scrolled elsewhere is left alone.
+    const { top, bottom } = segment.getBoundingClientRect();
+    if (bottom > window.innerHeight - 40 && top < window.innerHeight + 160) segment.scrollIntoView({ block: 'center', behavior: 'smooth' });
 });
 
 // Clips are in seconds from the stream (VOD) start; transcript and event times are from the start of the media file,
@@ -218,8 +223,39 @@ const poll = async () => {
     await refreshStatus(stream);
     if (!isTranscriptionActive(stream) && !isEventExtractionActive(stream)) router.reload();
 };
-onMounted(() => { void scrollToHighlight(); pollTimer = window.setInterval(() => { void poll(); }, 2000); });
-onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTimer); });
+// Like a large title in an Apple app: once the stream's title scrolls away, a compact bar with the title and status
+// slides in above the sticky audio player and tabs. --stream-sticky-bottom is where those bars end, for content that
+// sticks below them (the clip player) and for scrolling a new transcript page back to its top.
+const heroTitle = ref<HTMLElement | null>(null);
+const stickyBar = ref<HTMLElement | null>(null);
+const compact = ref(false);
+const COMPACT_HEIGHT = 58;
+const stickyHeight = ref(0);
+const stickyBottom = computed(() => (compact.value ? COMPACT_HEIGHT : 0) + stickyHeight.value);
+const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+const panel = ref<HTMLElement | null>(null);
+watch(() => props.segments.from, async () => {
+    await nextTick();
+    if (props.highlighted_segment_ids.length || !panel.value) return;
+    const top = panel.value.getBoundingClientRect().top;
+    if (top < stickyBottom.value) window.scrollBy({ top: top - stickyBottom.value - 12 });
+});
+let titleObserver: IntersectionObserver | undefined;
+let stickyObserver: ResizeObserver | undefined;
+
+onMounted(() => {
+    void scrollToHighlight();
+    pollTimer = window.setInterval(() => { void poll(); }, 2000);
+    titleObserver = new IntersectionObserver(([entry]) => { compact.value = !entry.isIntersecting && entry.boundingClientRect.top < 0; });
+    if (heroTitle.value) titleObserver.observe(heroTitle.value);
+    stickyObserver = new ResizeObserver(() => { stickyHeight.value = stickyBar.value?.offsetHeight ?? 0; });
+    if (stickyBar.value) stickyObserver.observe(stickyBar.value);
+});
+onBeforeUnmount(() => {
+    if (pollTimer !== undefined) window.clearInterval(pollTimer);
+    titleObserver?.disconnect();
+    stickyObserver?.disconnect();
+});
 // Queued, waiting or running jobs of this stream that can be cancelled (or are being cancelled).
 const cancellable = computed(() => ([
     { task: 'video_download', label: 'Audio ophalen' },
@@ -231,12 +267,24 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
 
 <template>
     <Head :title="stream.title" />
-    <AppLayout :title="stream.title" eyebrow="Stream" fill>
+    <AppLayout :title="stream.title" eyebrow="Stream">
+        <div class="stream-page" :style="{ '--stream-sticky-bottom': stickyBottom + 'px' }">
+        <header class="stream-compact" :class="{ 'stream-compact-visible': compact }" :inert="!compact || undefined">
+            <button class="stream-compact-title" type="button" title="Naar boven" @click="scrollToTop">
+                <PlayerAvatar :name="stream.player.name" :photo-url="stream.player.photo_url" size="sm" />
+                <span><strong>{{ stream.title }}</strong><span class="transcription-stage">{{ stream.player.name }} · {{ formatDate(stream.started_at) }}</span></span>
+            </button>
+            <div class="stream-compact-statuses">
+                <span v-if="stream.twitch_video_id && !stream.video_path" class="status-pair"><span class="transcription-stage">Audio</span><span class="transcription-badge" :class="'transcription-' + audioState.badge">{{ audioState.label }}</span></span>
+                <span class="status-pair"><span class="transcription-stage">Transcript</span><span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ isTranscriptionActive(stream) ? Math.round(stream.transcription_progress) + '%' : transcriptionLabel(stream.transcription_status) }}</span></span>
+                <span class="status-pair"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ isEventExtractionActive(stream) && stream.event_extraction_progress !== null ? stream.event_extraction_progress + '%' : eventExtractionLabel(stream.event_extraction_status) }}</span></span>
+            </div>
+        </header>
         <Link class="back-link" :href="'/players/' + stream.player.id">← {{ stream.player.name }}</Link>
         <section class="stream-hero">
             <div class="stream-hero-text">
                 <p class="section-kicker">Stream</p>
-                <h2 class="page-section-title">{{ stream.title }}</h2>
+                <h2 ref="heroTitle" class="page-section-title">{{ stream.title }}</h2>
                 <p class="muted-copy"><Link class="inline-link" :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> · {{ formatDate(stream.started_at) }}<template v-if="stream.ended_at"> – {{ formatTime(stream.ended_at) }}</template><template v-if="streamDurationLabel(stream)"> · <strong class="stream-length-inline">{{ streamDurationLabel(stream) }}</strong><template v-if="stream.status === 'Live'"> live</template></template><template v-if="stream.duration_seconds"> · {{ formatSeconds(stream.duration_seconds) }} getranscribeerd</template> · {{ stream.segment_count }} segmenten · {{ events.length }} events</p>
                 <div class="stream-hero-statuses">
                     <span v-if="stream.twitch_video_id" class="status-pair"><span class="transcription-stage">Audio</span><span class="transcription-badge" :class="'transcription-' + audioState.badge">{{ audioState.label }}</span></span>
@@ -266,6 +314,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
         </section>
         <FlashMessages />
 
+        <div ref="stickyBar" class="stream-sticky" :class="{ 'stream-sticky-compact': compact }">
         <div v-if="stream.video_path" class="stream-audio">
             <span class="transcription-stage">{{ stream.video_mime_type?.startsWith('audio/') ? 'Audio' : 'Video' }}<template v-if="stream.video_file_size !== null"> · {{ formatBytes(stream.video_file_size) }}</template></span>
             <AudioPlayer ref="audio" :src="streamUrl + '/audio'" @time="audioTime = $event" @playing="audioPlaying = $event" />
@@ -276,15 +325,46 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
                 {{ tabLabels[tab] }}<span class="stream-tab-count">{{ tabCount(tab) }}</span>
             </Link>
         </nav>
+        </div>
 
-        <section v-if="activeTab === 'events'" class="detail-panel" aria-label="Events">
+        <section v-if="activeTab === 'story'" ref="panel" class="detail-panel stream-panel story-panel" aria-label="Verhaal">
+            <template v-if="hasStory">
+                <div v-if="storyParagraphs.length" class="story-summary">
+                    <p v-for="(paragraph, index) in storyParagraphs" :key="index"><SpeakerText :text="paragraph" :speakers="speakers" @pick="pickSpeaker($event)" /></p>
+                </div>
+                <div v-if="stream.story_players.length" class="story-players">
+                    <span class="transcription-stage">Spelers in dit verhaal</span>
+                    <template v-for="name in stream.story_players" :key="name">
+                        <Link v-if="storyPlayer(name)" class="story-player" :href="'/players/' + storyPlayer(name)!.id">{{ name }}</Link>
+                        <span v-else class="story-player">{{ name }}</span>
+                    </template>
+                </div>
+                <div v-if="stream.story_parts.length" class="story-parts">
+                    <h3 class="section-kicker">Per deel van de stream</h3>
+                    <div v-for="part in stream.story_parts" :key="part.start_time" class="story-part">
+                        <span class="event-time">{{ formatSeconds(part.start_time) }} – {{ formatSeconds(part.end_time) }}</span>
+                        <p><SpeakerText :text="part.summary" :speakers="speakers" @pick="pickSpeaker($event, part.start_time)" /></p>
+                        <span class="story-part-actions">
+                            <button v-if="stream.video_path" class="event-clip-button" type="button" title="Afspelen vanaf hier" @click="playFrom(part.start_time)">▶</button>
+                            <Link class="event-clip-button" :href="transcriptAt(part.start_time)" preserve-scroll>Transcript</Link>
+                        </span>
+                    </div>
+                </div>
+            </template>
+            <div v-else class="detail-empty">
+                <h3>Nog geen verhaal</h3>
+                <p>{{ stream.transcription_status === 'completed' ? 'Klik op “Analyseren”: de analyse schrijft op wat er in de game gebeurde, naast de events.' : 'Transcribeer eerst de stream en analyseer hem daarna.' }}</p>
+            </div>
+        </section>
+
+        <section v-else-if="activeTab === 'events'" ref="panel" class="detail-panel stream-panel" aria-label="Events">
             <div v-if="events.length" class="event-list">
                 <div v-for="event in events" :key="event.id" class="event-entry">
                     <div class="event-main">
                     <button type="button" class="event-item" :class="{ 'event-item-active': event.id === selected_event_id }" :aria-pressed="event.id === selected_event_id" @click="selectEvent(event)">
                         <span class="event-item-top"><span v-if="event.type !== 'other'" class="event-type" :class="'event-type-' + event.type">{{ eventTypeLabel(event.type) }}</span><span class="event-time event-time-end">{{ formatSeconds(event.start_time) }} – {{ formatSeconds(event.end_time) }}</span></span>
-                        <span class="event-title">{{ event.title }}</span>
-                        <span class="event-description">{{ event.description }}</span>
+                        <span class="event-title"><SpeakerText :text="event.title" :speakers="speakers" @pick="pickSpeaker($event, event.start_time)" /></span>
+                        <span class="event-description"><SpeakerText :text="event.description" :speakers="speakers" @pick="pickSpeaker($event, event.start_time)" /></span>
                         <span class="event-meta">{{ Math.round(event.confidence * 100) }}% zekerheid · {{ event.segment_count }} {{ event.segment_count === 1 ? 'segment' : 'segmenten' }}</span>
                     </button>
                     <span class="event-actions">
@@ -307,7 +387,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
             </div>
         </section>
 
-        <section v-else-if="activeTab === 'clips'" class="detail-panel clips-panel" aria-label="Clips">
+        <section v-else-if="activeTab === 'clips'" ref="panel" class="detail-panel stream-panel clips-panel" aria-label="Clips">
             <div class="clip-stage">
                 <div v-if="stream.twitch_video_id && selectedClip" class="clip-player"><TwitchPlayer ref="player" :video-id="stream.twitch_video_id" :start="selectedClip.start_seconds" :end="selectedClip.end_seconds" /></div>
                 <p v-else class="muted-copy">{{ stream.twitch_video_id ? 'Maak of kies een clip om hem hier te bekijken.' : 'Bekijken kan alleen bij een Twitch-VOD. Clips maken en bijstellen kan wel.' }}</p>
@@ -330,7 +410,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
             </div>
         </section>
 
-        <section v-else class="detail-panel" aria-label="Transcript">
+        <section v-else ref="panel" class="detail-panel stream-panel" aria-label="Transcript">
             <div v-if="selectedEvent" class="panel-heading"><p class="muted-copy">Gemarkeerd: <strong>{{ selectedEvent.title }}</strong></p><button class="secondary-button" type="button" @click="clearSelection">Wissen</button></div>
             <form class="transcript-search" @submit.prevent="submitSearch">
                 <label class="sr-only" for="transcript-search">Transcript doorzoeken</label>
@@ -339,42 +419,33 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
             </form>
             <div v-if="speakers.length" class="speaker-bar">
                 <span class="transcription-stage">Sprekers</span>
-                <button v-for="item in speakers" :key="item.speaker" class="speaker-chip" :class="[speakerClass(item.speaker), { 'speaker-chip-active': editingSpeaker === item.speaker, 'speaker-matched': item.source === 'matched' }]" type="button" :title="(item.source === 'matched' ? 'Herkend: ' + matchReason(item) + '. ' : '') + 'Spreker ' + item.speaker + ' · ' + item.segment_count + ' zinnen. Klik om te benoemen of samen te voegen.'" @click="editSpeaker(item)">
+                <button v-for="item in speakers" :key="item.speaker" class="speaker-chip" :class="[speakerClass(item.speaker), { 'speaker-chip-active': speaker_filter === item.speaker, 'speaker-matched': item.source === 'matched' }]" type="button" :aria-pressed="speaker_filter === item.speaker" :title="(item.source === 'matched' ? 'Herkend: ' + matchReason(item) + '. ' : '') + 'Spreker ' + item.speaker + ' · ' + item.segment_count + ' zinnen. ' + (speaker_filter === item.speaker ? 'Klik om iedereen weer te tonen.' : 'Klik om alleen deze spreker te tonen.')" @click="filterSpeaker(item.speaker)">
                     {{ item.name }}<template v-if="item.source === 'matched'">?</template><span>{{ formatSeconds(item.seconds) }}</span>
                 </button>
             </div>
-            <form v-if="editingSpeaker !== null" class="speaker-editor" @submit.prevent="saveSpeaker">
-                <div class="form-field"><label for="speaker-name">Wie is spreker {{ editingSpeaker }}?</label>
-                    <select id="speaker-name" v-model="speakerForm.choice">
-                        <option value="">{{ automaticLabel }}</option>
-                        <option value="unknown">Onbekend (niet herkennen)</option>
-                        <option value="label">Andere naam…</option>
-                        <option v-for="player in players" :key="player.id" :value="String(player.id)">{{ player.name }}</option>
-                    </select>
-                </div>
-                <div v-if="speakerForm.choice === 'label'" class="form-field"><label for="speaker-label">Naam</label><input id="speaker-label" v-model="speakerForm.label" type="text" maxlength="60" placeholder="bijv. een gast of de chat-TTS" required /></div>
-                <button class="primary-button" type="submit">Opslaan</button>
-                <button v-if="editedSpeaker?.source === 'matched'" class="secondary-button" type="button" @click="confirmMatch">✓ Klopt, dit is {{ editedSpeaker.name }}</button>
-                <Link v-if="editedSpeaker?.matched_by === 'text' && editedSpeaker.text_stream_id" class="inline-link speaker-evidence" :href="'/streams/' + editedSpeaker.text_stream_id">Stream van {{ editedSpeaker.name }} bekijken ↗</Link>
-                <div class="speaker-merge">
-                    <div class="form-field"><label for="speaker-merge">Is dezelfde persoon als</label>
-                        <select id="speaker-merge" v-model="speakerForm.mergeInto"><option value="">Kies een spreker…</option><option v-for="item in speakers.filter((candidate) => candidate.speaker !== editingSpeaker)" :key="item.speaker" :value="String(item.speaker)">{{ item.name }}</option></select>
-                    </div>
-                    <button class="secondary-button" type="button" :disabled="speakerForm.mergeInto === ''" @click="mergeSpeaker">Samenvoegen</button>
-                </div>
-                <button class="modal-close" type="button" aria-label="Sluiten" @click="editingSpeaker = null">×</button>
-            </form>
-            <div v-if="segments.data.length" ref="transcriptList" class="transcript-list transcript-list-scroll">
+            <div v-if="speaker_filter !== null" class="speaker-filter">
+                <p class="muted-copy">Alleen <strong>{{ filteredSpeaker?.name ?? 'Spreker ' + speaker_filter }}</strong>: {{ segments.total }} {{ segments.total === 1 ? 'zin' : 'zinnen' }}</p>
+                <button v-if="filteredSpeaker" class="secondary-button" type="button" @click="editSpeaker(filteredSpeaker)">Wie is dit?</button>
+                <button class="secondary-button" type="button" @click="filterSpeaker(null)">Iedereen tonen</button>
+            </div>
+            <SpeakerEditor v-if="editedSpeaker && !editorInModal" :stream-url="streamUrl" :speaker="editedSpeaker" :speakers="speakers" :players="players" :streamer-name="stream.player.name" @close="editingSpeaker = null" />
+            <div v-if="segments.data.length" ref="transcriptList" class="transcript-list">
                 <article v-for="segment in segments.data" :key="segment.id" class="transcript-segment" :class="{ 'segment-highlight': isHighlighted(segment), 'segment-playing': segment.id === playingSegmentId }">
                     <div class="segment-time">{{ formatSeconds(segment.start_time) }}</div>
                     <div class="segment-copy"><select v-if="editingSegmentId === segment.id" class="segment-speaker-select" :value="segment.speaker === null ? 'none' : String(segment.speaker)" aria-label="Spreker van deze zin" @change="moveSegment(segment, ($event.target as HTMLSelectElement).value)" @blur="editingSegmentId = null">
                         <option v-for="item in speakers" :key="item.speaker" :value="String(item.speaker)">{{ item.name }}</option>
                         <option value="new">Nieuwe spreker</option>
                         <option value="none">Geen spreker</option>
-                    </select><button v-else-if="segment.speaker !== null" class="segment-speaker" :class="[speakerClass(segment.speaker), { 'speaker-matched': isMatched(segment.speaker) }]" type="button" :title="speakerTitle(segment.speaker)" @click="openSegmentSpeaker(segment)">{{ speakerLabel(segment.speaker) }}<template v-if="isMatched(segment.speaker)">?</template></button><button v-else-if="speakers.length" class="segment-speaker segment-speaker-none" type="button" title="Geen spreker. Klik om er een te kiezen." @click="openSegmentSpeaker(segment)">?</button><p>{{ segment.text }}</p><span>{{ formatSeconds(segment.end_time) }}</span></div>
+                    </select><button v-else-if="segment.speaker !== null" class="segment-speaker" :class="[speakerClass(segment.speaker), { 'speaker-matched': isMatched(segment.speaker) }]" type="button" :title="speakerTitle(segment.speaker)" @click="openSegmentSpeaker(segment)">{{ speakerLabel(segment.speaker) }}<template v-if="isMatched(segment.speaker)">?</template></button><button v-else-if="speakers.length" class="segment-speaker segment-speaker-none" type="button" title="Geen spreker. Klik om er een te kiezen." @click="openSegmentSpeaker(segment)">?</button><form v-if="editingTextId === segment.id" class="segment-text-editor" @submit.prevent="saveSegmentText(segment, textDraft)">
+                        <textarea v-model="textDraft" rows="2" maxlength="2000" aria-label="Tekst van deze zin" @keydown.enter.exact.prevent="saveSegmentText(segment, textDraft)" @keydown.esc.prevent="editingTextId = null" />
+                        <span class="segment-text-actions"><button class="primary-button" type="submit">Opslaan</button><button class="secondary-button" type="button" @click="editingTextId = null">Annuleren</button><button v-if="segment.original_text" class="secondary-button" type="button" @click="saveSegmentText(segment, segment.original_text)">Herkende tekst terugzetten</button><span class="transcription-stage">Enter: opslaan · Esc: annuleren</span></span>
+                        <p v-if="segment.original_text" class="segment-original">Herkend als: {{ segment.original_text }}</p>
+                    </form><p v-else title="Dubbelklik om te verbeteren" @dblclick="startEditText(segment)">{{ segment.text }}<span v-if="segment.original_text" class="segment-edited" :title="'Herkend als: ' + segment.original_text">aangepast</span></p><span>{{ formatSeconds(segment.end_time) }}</span></div>
                     <div class="segment-actions">
                         <button v-if="stream.video_path" class="segment-clip" type="button" title="Afspelen vanaf hier" @click="playFrom(segment.start_time)">▶</button>
+                        <button class="segment-clip" type="button" title="Tekst verbeteren" @click="startEditText(segment)">✎</button>
                         <button class="segment-clip" type="button" title="Clip vanaf hier (1 minuut)" @click="clipFromSegment(segment)">✂ Clip</button>
+                        <Link v-if="speaker_filter !== null || search" class="segment-clip" :href="transcriptAt(segment.start_time)" title="Deze zin in het hele gesprek bekijken" preserve-state>In gesprek</Link>
                     </div>
                 </article>
             </div>
@@ -389,5 +460,14 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
                 </nav>
             </div>
         </section>
+        <div v-if="editedSpeaker && editorInModal" class="modal-backdrop" role="presentation" @click.self="editingSpeaker = null">
+            <SpeakerEditor class="speaker-editor-modal" :stream-url="streamUrl" :speaker="editedSpeaker" :speakers="speakers" :players="players" :streamer-name="stream.player.name" @close="editingSpeaker = null">
+                <template v-if="pickedAt !== null">
+                    <button v-if="stream.video_path" class="secondary-button" type="button" @click="playFrom(pickedAt)">▶ Luister vanaf dit moment</button>
+                    <Link class="inline-link speaker-evidence" :href="transcriptAt(pickedAt)" @click="editingSpeaker = null">Bekijk in transcript ↗</Link>
+                </template>
+            </SpeakerEditor>
+        </div>
+        </div>
     </AppLayout>
 </template>

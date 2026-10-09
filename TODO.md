@@ -10,14 +10,12 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 ## Event Extraction-basis (plan stap afronden)
 
 - [ ] Event-extractie testen op een echte SMP-stream met ontmoetingen. Stream 41 is een tips-video, en de huidige prompt is getest op zelfgemaakte SMP-fragmenten.
-- [ ] Ruis in events op echte streams verminderen. Stream "dag 1" (50 min) gaf 110 events, waarvan ~60% ruis: "Mentions …", sub-bedankjes en de intro. Meet dit met echte chunks in `make prompt-eval`.
 - [ ] Later, voor cross-stream matching: genoemde spelers als apart veld opslaan (nu alleen in titel en beschrijving)
 
 ## Features
 
 - [ ] Sprekerherkenning op echte streams beoordelen: kloppen de sprekers en is speaker 0 echt de streamer? Daarvoor eerst een Hugging Face-token (`HF_TOKEN`) in `.env` en in de `worker/.env` van elke worker, met de voorwaarden van pyannote/speaker-diarization-3.1 en pyannote/segmentation-3.0 geaccepteerd.
 - [ ] Drempel voor stemherkenning meten zodra meerdere spelers streams met sprekerherkenning hebben: `php artisan voices:evaluate`, daarna `VOICE_MATCH_THRESHOLD` bijstellen (nu 0,6, nog niet gemeten).
-- [ ] Sprekers meegeven aan Qwen bij event-extractie (wie zegt wat), en het effect meten met `make prompt-eval`
 - [ ] Clips in 1080p ophalen (kiezen, bekijken en bijstellen is klaar): alleen dat stuk downloaden. Let op: ffmpeg-seek in de HLS-playlist van Twitch blijft hangen, dus zelf de benodigde `.ts`-segmenten uit de m3u8 halen en lokaal knippen. Moet binnen de bewaartermijn: Partners 60 dagen, 2 spelers maar 7 dagen.
 - [ ] Downloads op een eigen queue-worker zetten, zodat ze transcripties niet ophouden
 - [ ] Het praten met de chat vóór de gameplay overslaan bij transcriptie of analyse. Daarvoor moet bekend zijn wanneer de speler zelf joinde, en creatorsmp.nl geeft alleen wanneer iemand vertrok en hoe lang hij speelde. Optie: OCR van "<speler> joined the game" in de eigen POV, of zelf een startpunt per stream zetten.
@@ -57,11 +55,16 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 ## Ideeën
 
--
+- Spelernamen in het verhaal en de events koppelen aan de spelerlijst: het model schrijft soms "Egbertlive" naast "Egbert" of "Jeremy Frieser" naast "Jeremy".
+- Verhalen van meerdere streams van dezelfde dag samenvoegen tot één verhaallijn van de server (alle POV's samen, met "Zelfde moment"-koppelingen).
 
 ## Klaar
 
 - [x] Whisper op de Mac via de GPU (mlx-whisper) in plaats van de CPU: 10 min van stream 2 in 21 s i.p.v. 157 s (29× realtime), een stream van ~6 uur zou zo ~12 minuten duren (binnen het uur van een job). Zelfde stiltefilter en tijden als op de CPU; een herhalingslus bij muziek (15× "Oh.") wordt samengevoegd. `WHISPER_DEVICE=cpu` zet hem terug op de CPU.
+- [x] Eventherkenning draait om het verhaal van de server: alleen in-game verhaal-events (ontmoetingen, samenwerken, ruzie, verraad, gevechten, ruilen, plot), geen chat-praat of routine (bomen hakken, kapotte pickaxe). Stukken van 5 minuten in plaats van 90 seconden, het model krijgt wie er praat, wie de streamer is en de spelerlijst (verkeerd gespelde namen worden goed), en een event loopt van begin tot eind (minimaal 2 zinnen). Nieuwe types: samenwerking, conflict, ruil, verhaal. Prompt-eval: 6/6 verhaalmomenten, 0 ruis.
+- [x] Verhaal per stream (tab "Verhaal"): wat de speler in de game deed, wie hij tegenkwam en wat er gebeurde, per uur een alinea, plus een samenvatting per deel van 5 minuten met ▶ en een link naar het transcript. Verzonnen plekken (zoals de Nether), chat-praat en herhalingen worden eruit gehaald.
+- [x] "Spreker 6" in events en verhaal is klikbaar om te zeggen wie het is; het transcript filtert op een spreker; zinnen zijn met de hand te verbeteren.
+- [x] Afspelen vanaf een transcriptregel klopte niet bij Twitch' HLS-audio (stream 66): het bestand wordt na het ophalen een gewone MP4 (`streams:normalize-audio` voor oude bestanden).
 - [x] Sprekers herkennen aan wat ze zeggen: zegt een spreker op hetzelfde moment dezelfde zinnen als de streamer van een andere stream, dan is het die speler. Gaat vóór stemherkenning, werkt ook als de stem via Discord anders klinkt, en zo herkende stemmen verbeteren het stemprofiel. Draait vanzelf na elke transcriptie; voor oude streams `php artisan speakers:match-text`. Nog te testen op een echt paar (47 + 51).
 - [x] Dashboard toont bovenaan "Nu bezig": welke streams nu audio ophalen, transcriberen of analyseren (of in de wachtrij staan), met voortgang, resterende tijd, worker en annuleren. Werkt zichzelf elke 3 seconden bij.
 - [x] Whisper-model van `small` naar `large-v3-turbo`: op 10 min van stream 47 sneller (37 s i.p.v. 84 s), 13% meer woorden, geen verzonnen herhalingen, en kortere zinnen per spreekbeurt (beter voor sprekerherkenning).
