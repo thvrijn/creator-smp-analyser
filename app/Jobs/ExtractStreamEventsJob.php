@@ -80,7 +80,7 @@ class ExtractStreamEventsJob implements ShouldQueue
             $events = [];
             $parts = [];
             $skippedChunks = [];
-            $chunks = $this->chunks($segments->all());
+            $chunks = self::chunks($segments->all());
             $context = $this->context($stream);
             $speakerNames = collect(app(StreamSpeakers::class)->list($stream))->pluck('name', 'speaker');
             // One step per chunk, plus the storyline of the whole stream at the end.
@@ -228,8 +228,16 @@ class ExtractStreamEventsJob implements ShouldQueue
         }
     }
 
-    /** @param array<int, TranscriptSegment> $segments @return array<int, array<int, \App\Models\TranscriptSegment>> */
-    private function chunks(array $segments): array
+    /**
+     * The parts the analysis sends to the model, in order. Also used by the stream page to show the same parts, with
+     * any objects that have start_time and end_time.
+     *
+     * @template T of object
+     *
+     * @param  array<int, T>  $segments  sorted by start time
+     * @return array<int, array<int, T>>
+     */
+    public static function chunks(array $segments): array
     {
         $size = (float) config('services.event_worker.chunk_seconds', 300);
         $overlap = min((float) config('services.event_worker.overlap_seconds', 60), max(0, $size - 1));

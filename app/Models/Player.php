@@ -18,8 +18,13 @@ class Player extends Model
         'name',
         'photo_path',
         'twitch_login',
+        'twitch_broadcaster_type',
+        'team',
         'vods_synced_at',
     ];
+
+    /** The two teams of Creator SMP 4, split by the wall. */
+    public const TEAMS = ['Noord', 'Zuid'];
 
     protected static function booted(): void
     {
@@ -35,6 +40,16 @@ class Player extends Model
     public function streams(): HasMany
     {
         return $this->hasMany(Stream::class);
+    }
+
+    public function deaths(): HasMany
+    {
+        return $this->hasMany(PlayerDeath::class)->orderBy('died_at');
+    }
+
+    public function clips(): HasManyThrough
+    {
+        return $this->hasManyThrough(Clip::class, Stream::class);
     }
 
     public function events(): HasManyThrough
@@ -57,6 +72,7 @@ class Player extends Model
                 'streams as transcribed_streams_count' => fn (Builder $streams) => $streams->where('transcription_status', 'completed'),
                 'streams as active_streams_count' => fn (Builder $streams) => $streams->active(),
                 'events',
+                'deaths',
             ])
             ->withMax('streams', 'started_at');
     }
@@ -75,6 +91,8 @@ class Player extends Model
             'name' => $this->name,
             'photo_url' => $this->photoUrl(),
             'twitch_login' => $this->twitch_login,
+            'team' => $this->team,
+            'deaths_count' => (int) $this->deaths_count,
             'vods_synced_at' => $this->vods_synced_at?->toIso8601String(),
             'streams_count' => (int) $this->streams_count,
             'transcribed_streams_count' => (int) $this->transcribed_streams_count,

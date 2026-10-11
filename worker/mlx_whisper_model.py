@@ -25,7 +25,7 @@ class MlxWhisperModel:
         # mlx-whisper keeps its model in this class-level cache; transcribe() below finds it there (fp16, its default).
         ModelHolder.get_model(repo, mx.float16)
 
-    def transcribe(self, audio_path: str, language: str | None = None, vad_filter: bool = False, **_kwargs: Any) -> tuple[list[Any], None]:
+    def transcribe(self, audio_path: str, language: str | None = None, vad_filter: bool = False, word_timestamps: bool = False, **_kwargs: Any) -> tuple[list[Any], None]:
         import mlx_whisper
 
         audio = decode_audio(audio_path, sampling_rate=SAMPLING_RATE)
@@ -39,13 +39,23 @@ class MlxWhisperModel:
             audio = np.concatenate(parts)
             timestamps = SpeechTimestampsMap(speech, SAMPLING_RATE)
         # Greedy decoding: mlx-whisper has no beam search. verbose=None prints nothing.
-        result = mlx_whisper.transcribe(audio, path_or_hf_repo=self.repo, language=language, verbose=None)
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=self.repo, language=language, verbose=None, word_timestamps=word_timestamps)
+
+        def original(start: float, end: float) -> tuple[float, float]:
+            if timestamps is None:
+                return start, end
+            return timestamps.get_original_time(start), timestamps.get_original_time(end, is_end=True)
+
         segments = []
         for segment in result["segments"]:
-            start, end = float(segment["start"]), float(segment["end"])
-            if timestamps is not None:
-                start, end = timestamps.get_original_time(start), timestamps.get_original_time(end, is_end=True)
-            segments.append(SimpleNamespace(start=start, end=end, text=segment["text"]))
+            start, end = original(float(segment["start"]), float(segment["end"]))
+            words = [SimpleNamespace(start=word_start, end=word_end, word=word["word"])
+                     for word in segment.get("words") or []
+                     for word_start, word_end in [original(float(word["start"]), float(word["end"]))]]
+            segments.append(SimpleNamespace(
+                start=start, end=end, text=segment["text"], words=words or None,
+                no_speech_prob=float(segment.get("no_speech_prob", 0.0)), avg_logprob=float(segment.get("avg_logprob", 0.0)),
+            ))
         return collapse_repeats(segments), None
 
     def unload(self) -> None:
@@ -69,7 +79,7 @@ def collapse_repeats(segments: list[Any]) -> list[Any]:
             run.append(segment)
             continue
         if len(run) > MAX_REPEATS:
-            collapsed.append(SimpleNamespace(start=run[0].start, end=run[-1].end, text=run[0].text))
+            collapsed.append(SimpleNamespace(start=run[0].start, end=run[-1].end, text=run[0].text, words=None))
         else:
             collapsed.extend(run)
         run = [segment] if segment is not None else []

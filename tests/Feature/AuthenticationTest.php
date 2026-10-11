@@ -117,4 +117,29 @@ class AuthenticationTest extends TestCase
         $this->assertSame(1, User::count());
         $this->post('/login', ['username' => 'thoompje', 'password' => 'nieuw-wachtwoord'])->assertRedirect('/dashboard');
     }
+
+    public function test_reset_admin_restores_the_admin_login(): void
+    {
+        $this->seed(AdminUserSeeder::class);
+        User::create(['username' => 'sophie', 'name' => 'Sophie', 'password' => 'wachtwoord']);
+
+        $this->artisan('user:reset-admin')->assertSuccessful();
+        $this->post('/login', ['username' => 'admin', 'password' => 'admin'])->assertRedirect('/dashboard');
+        $this->assertTrue(User::where('username', 'admin')->firstOrFail()->isAdmin());
+
+        // A renamed admin is still found by the seeder, so a deploy does not add a second one.
+        $this->seed(AdminUserSeeder::class);
+        $this->assertSame(2, User::count());
+        $this->assertNull(User::where('username', 'thoompje')->first());
+
+        $this->artisan('user:reset-admin', ['--username' => 'sophie'])->assertFailed();
+    }
+
+    public function test_reset_admin_creates_a_missing_admin(): void
+    {
+        $this->artisan('user:reset-admin', ['--username' => 'baas', '--password' => 'geheim'])->assertSuccessful();
+
+        $this->assertTrue(User::where('username', 'baas')->firstOrFail()->isAdmin());
+        $this->post('/login', ['username' => 'baas', 'password' => 'geheim'])->assertRedirect('/dashboard');
+    }
 }

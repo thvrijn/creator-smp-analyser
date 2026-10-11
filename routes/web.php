@@ -3,9 +3,11 @@
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClipController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\PlayerController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SpeakerController;
 use App\Http\Controllers\TranscriptSegmentController;
 use App\Http\Controllers\StreamController;
@@ -28,8 +30,8 @@ Route::middleware('auth')->group(function (): void {
         return redirect('/dashboard');
     });
 
-    Route::get('/dashboard', [PlayerController::class, 'dashboard'])->name('dashboard');
-    Route::get('/overview', fn () => Inertia::render('Overview'))->name('overview');
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+    Route::post('/dashboard/queue/{step}', [DashboardController::class, 'queue'])->whereIn('step', ['download', 'transcribe', 'extract'])->name('dashboard.queue');
     Route::get('/streams', [StreamController::class, 'index'])->name('streams.index');
     Route::post('/streams', [StreamController::class, 'store'])->name('streams.store');
     Route::delete('/streams/{stream}', [StreamController::class, 'destroy'])->name('streams.destroy');
@@ -55,6 +57,10 @@ Route::middleware('auth')->group(function (): void {
     Route::put('/players/{player}', [PlayerController::class, 'update'])->name('players.update');
     Route::delete('/players/{player}', [PlayerController::class, 'destroy'])->name('players.destroy');
     Route::get('/timeline', fn () => Inertia::render('Timeline'));
+    // Not built yet: pages with example content, so the navigation shows where the app is going.
+    Route::get('/storylines', fn () => Inertia::render('Storylines'))->name('storylines');
+    Route::get('/episodes', fn () => Inertia::render('Episodes'))->name('episodes');
+    Route::get('/search', SearchController::class)->name('search');
     Route::get('/events', [EventController::class, 'index'])->name('events.index');
     Route::get('/video-builder', [ClipController::class, 'index'])->name('video-builder');
     Route::post('/streams/{stream}/clips', [ClipController::class, 'store'])->name('clips.store');

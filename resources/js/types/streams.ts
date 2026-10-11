@@ -4,6 +4,8 @@ export type PlayerRef = PlayerOption & { photo_url: string | null };
 export type EditablePlayer = PlayerRef & { twitch_login: string | null };
 
 export type PlayerStats = EditablePlayer & {
+    team: string | null;
+    deaths_count: number;
     vods_synced_at: string | null;
     streams_count: number;
     transcribed_streams_count: number;

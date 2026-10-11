@@ -7,6 +7,7 @@ failed=0
 
 ok() { printf '  \033[32mok\033[0m    %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; failed=1; }
+skip() { printf '  \033[33mskip\033[0m  %s\n' "$1"; }
 
 echo "CreatorSMP4 health check:"
 
@@ -30,6 +31,14 @@ done
 $COMPOSE ps --status running --services 2>/dev/null | grep -qx queue && ok "queue worker running" || fail "queue container not running (see: make logs-queue)"
 ytdlp=$($COMPOSE exec -T queue yt-dlp --version 2>/dev/null | tr -d '\r')
 [ -n "$ytdlp" ] && ok "yt-dlp $ytdlp (VOD downloads)" || fail "yt-dlp missing in the queue container (run: make start, it rebuilds the image)"
+
+# NO_WORKER=1 (make start-lite): no local worker and no GPU; a remote worker may still check in.
+if [ -n "${NO_WORKER:-}" ]; then
+    workers=$($COMPOSE exec -T app php artisan workers:list --online 2>/dev/null | grep ' online ' | awk -F'|' '{gsub(/ /, "", $2); print $2}' | paste -sd, -)
+    skip "local python worker and GPU (NO_WORKER); workers online: ${workers:-none, jobs wait for one}"
+    if [ "$failed" = "0" ]; then echo "All checks passed. Open http://localhost:8000"; else echo "Some checks failed."; fi
+    exit "$failed"
+fi
 
 # Through the app container, so this tests the URL the app reaches the local worker on (on macOS: the host).
 health=""

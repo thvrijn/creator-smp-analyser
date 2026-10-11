@@ -1,6 +1,7 @@
 import hmac
 import json
 import os
+import re
 import subprocess
 import tempfile
 import urllib.error
@@ -11,7 +12,7 @@ from threading import Thread
 import time
 from typing import Any, Callable
 
-from faster_whisper import WhisperModel
+from faster_whisper import BatchedInferencePipeline, WhisperModel
 import diarization
 import registration
 from event_extractor import EventExtractor
@@ -28,6 +29,26 @@ CPU_THREADS = max(0, int(os.getenv("WHISPER_CPU_THREADS", "0") or 0))
 MODEL_CACHE = os.getenv("WHISPER_MODEL_CACHE", "/worker/.cache")
 FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT_SECONDS", "7200"))
 WHISPER_CHUNK_SECONDS = max(30, float(os.getenv("WHISPER_CHUNK_SECONDS", "300")))
+# Each chunk's audio runs on this long, so a sentence over the chunk's end is transcribed whole; the next chunk starts
+# where the last kept sentence ends. At least Whisper's 30 s window, so a sentence that starts just before the end fits.
+WHISPER_CHUNK_OVERLAP_SECONDS = max(0.0, float(os.getenv("WHISPER_CHUNK_OVERLAP_SECONDS", "30")))
+# Speech pieces decoded at once on the GPU (faster-whisper's BatchedInferencePipeline); 0 = one after the other (default).
+# Measured on 20 min of a real stream (RTX 5060, 2026-10-11): batch 8 was 33x realtime against 24x, but it decodes each
+# 30 s piece in one pass, and when Whisper stops early the rest is lost: 5% fewer words, and a 28 s stretch of a
+# conversation was gone. Batch 16 was no faster; 15 s pieces lost less but were no faster than one at a time.
+WHISPER_BATCH_SIZE = max(0, int(os.getenv("WHISPER_BATCH_SIZE", "0") or 0))
+# Whisper's well-known Dutch hallucinations over music or silence: subtitle credits from its training data.
+HALLUCINATION_PATTERN = re.compile(r"amara\.org|ondertitel(?:d|ing) door|nederlandse ondertiteling|tv gelderland", re.IGNORECASE)
+# Batched decoding returns one segment per speech piece (up to 30 s, often many sentences). A segment longer than this
+# is cut after sentence ends (word times), into pieces of at least SENTENCE_MIN_SECONDS, so a line is about one sentence.
+SENTENCE_SPLIT_SECONDS = 10.0
+SENTENCE_MIN_SECONDS = 3.0
+SENTENCE_END = (".", "?", "!", "…")
+# Without a sentence end (Whisper sometimes writes a long chain of clauses), a piece this long is cut at a comma.
+CLAUSE_SPLIT_SECONDS = 8.0
+# A segment the model itself thinks is no speech, decoded with low confidence, is noise turned into words.
+NO_SPEECH_PROBABILITY = 0.6
+LOW_LOG_PROBABILITY = -1.0
 MODEL_IDLE_SECONDS = max(0.0, float(os.getenv("WORKER_MODEL_IDLE_SECONDS", "600")))
 # Where audio downloaded from the app is kept while it is transcribed (a worker without the app's storage).
 DOWNLOAD_DIR = os.getenv("WORKER_CACHE_DIR") or None
@@ -181,6 +202,44 @@ def transcription_spans(ranges: list[list[float]] | None, duration: float) -> li
     return merged
 
 
+def whisper_segments(model: Any, audio_file: Path, hotwords: str | None = None) -> Any:
+    """Whisper over one chunk: speech only (VAD), with word times (for splitting by speaker), batched on a GPU."""
+    options: dict[str, Any] = {"language": LANGUAGE, "vad_filter": True, "word_timestamps": True}
+    if isinstance(model, MlxWhisperModel):
+        # mlx-whisper has no hotwords; an initial prompt would make it repeat the names in quiet parts.
+        return model.transcribe(str(audio_file), **options)[0]
+    if hotwords:
+        options["hotwords"] = hotwords
+    if WHISPER_BATCH_SIZE > 0 and DEVICE != "cpu":
+        # Sentence timestamps on: without them the batched pipeline gives one segment per 30 s speech piece.
+        return BatchedInferencePipeline(model).transcribe(str(audio_file), batch_size=WHISPER_BATCH_SIZE, without_timestamps=False, **options)[0]
+    return model.transcribe(str(audio_file), **options)[0]
+
+
+def sentences(start: float, end: float, text: str, words: list[tuple[float, float, str]]) -> list[tuple[float, float, str, list[tuple[float, float, str]]]]:
+    """A long segment as pieces that end at a sentence end; a short one, or one without word times, as it is."""
+    if end - start <= SENTENCE_SPLIT_SECONDS or not words:
+        return [(start, end, text, words)]
+    pieces: list[list[tuple[float, float, str]]] = [[]]
+    for index, word in enumerate(words):
+        pieces[-1].append(word)
+        # Cut after a sentence end once the piece is long enough, but not right before the segment's last words.
+        piece_seconds = word[1] - pieces[-1][0][0]
+        ends = word[2].strip().endswith(SENTENCE_END) or (word[2].strip().endswith(",") and piece_seconds >= CLAUSE_SPLIT_SECONDS)
+        if ends and piece_seconds >= SENTENCE_MIN_SECONDS and words[-1][1] - word[1] >= SENTENCE_MIN_SECONDS:
+            pieces.append([])
+    pieces = [piece for piece in pieces if piece]
+    if len(pieces) == 1:
+        return [(start, end, text, words)]
+    return [(piece[0][0], piece[-1][1], "".join(word for _s, _e, word in piece).strip(), piece) for piece in pieces]
+
+
+def is_hallucination(segment: Any, text: str) -> bool:
+    if HALLUCINATION_PATTERN.search(text):
+        return True
+    return getattr(segment, "no_speech_prob", 0.0) > NO_SPEECH_PROBABILITY and getattr(segment, "avg_logprob", 0.0) < LOW_LOG_PROBABILITY
+
+
 def load_whisper_model() -> WhisperModel | MlxWhisperModel:
     if DEVICE == "mlx":
         # The Mac's GPU (scripts/worker-mac.sh); MODEL_NAME is then an MLX checkpoint on Hugging Face.
@@ -203,6 +262,7 @@ def transcribe_stream(
     emit: Callable[[dict[str, Any]], None] | None = None,
     ranges: list[list[float]] | None = None,
     video_url: str | None = None,
+    hotwords: str | None = None,
 ) -> dict[str, Any]:
     send = emit or (lambda _event: None)
     # Download first (if needed), so the GPU is not held while the audio comes in.
@@ -213,13 +273,14 @@ def transcribe_stream(
             keep_audio = diarization.enabled()
             # Hold Whisper for the whole stream so event requests cannot swap it out between chunks.
             with MODELS.use("whisper", load_whisper_model, unload_whisper_model) as model:
-                transcript = _transcribe_stream(model, video_file, Path(temporary_directory), send, ranges, keep_audio)
+                transcript = _transcribe_stream(model, video_file, Path(temporary_directory), send, ranges, keep_audio, hotwords)
             segments = transcript["segments"]
             if keep_audio and segments:
                 add_speakers(transcript, send)
             for segment in segments:
                 segment.pop("_audio_start", None)
                 segment.pop("_audio_end", None)
+                segment.pop("_words", None)
     finally:
         if downloaded:
             video_file.unlink(missing_ok=True)
@@ -234,6 +295,7 @@ def _transcribe_stream(
     send: Callable[[dict[str, Any]], None],
     ranges: list[list[float]] | None = None,
     keep_audio: bool = False,
+    hotwords: str | None = None,
 ) -> dict[str, Any]:
     # Only these parts are transcribed (e.g. the Creator SMP part of a Twitch VOD). Segment times stay file times;
     # duration and progress count the transcribed parts only.
@@ -248,46 +310,53 @@ def _transcribe_stream(
     for span_start, span_end in spans:
         chunk_start = span_start
         while chunk_start < span_end:
-            chunk_duration = min(WHISPER_CHUNK_SECONDS, span_end - chunk_start)
+            nominal_end = min(span_end, chunk_start + WHISPER_CHUNK_SECONDS)
+            window_end = min(span_end, nominal_end + WHISPER_CHUNK_OVERLAP_SECONDS)
+            nominal_duration = nominal_end - chunk_start
             audio_file = temporary_directory / f"audio-{int(chunk_start)}.wav"
             chunk_done = done + chunk_start - span_start
             last_progress = -1
 
             def extraction_progress(processed: float) -> None:
                 nonlocal last_progress
-                global_processed = chunk_done + min(chunk_duration, max(0.0, processed))
+                global_processed = chunk_done + min(nominal_duration, max(0.0, processed))
                 progress = progress_for(global_processed, duration)
                 if progress != last_progress:
                     last_progress = progress
                     send({"type": "progress", "stage": "extracting_audio", "processed_seconds": global_processed, "progress": progress, "segment_count": len(result_segments)})
 
-            extract_audio(video_file, audio_file, extraction_progress, chunk_duration, chunk_start)
+            extract_audio(video_file, audio_file, extraction_progress, window_end - chunk_start, chunk_start)
             send({"type": "stage", "stage": "transcribing", "processed_seconds": chunk_done, "progress": progress_for(chunk_done, duration), "segment_count": len(result_segments)})
+            kept_until = nominal_end
             try:
-                segments, _info = model.transcribe(str(audio_file), language=LANGUAGE, vad_filter=True)
-                for segment in segments:
+                for segment in whisper_segments(model, audio_file, hotwords):
+                    if chunk_start + float(segment.start) >= nominal_end:
+                        break  # starts in the overlap: the next chunk transcribes it, with what follows
                     text = segment.text.strip()
-                    if not text:
+                    if not text or is_hallucination(segment, text):
                         continue
-                    item = {
-                        "start": chunk_start + float(segment.start),
-                        "end": chunk_start + float(segment.end),
-                        "text": text,
-                    }
-                    send({"type": "segment", **item})
-                    # Where the segment is in the kept audio (chunk_done is where this chunk starts there).
-                    result_segments.append({**item, "_audio_start": chunk_done + float(segment.start), "_audio_end": chunk_done + float(segment.end)})
+                    # Chunk time; words as (start, end, word).
+                    words = [(float(word.start), float(word.end), word.word) for word in (getattr(segment, "words", None) or [])]
+                    for start, end, piece_text, piece_words in sentences(float(segment.start), float(segment.end), text, words):
+                        item = {"start": chunk_start + start, "end": chunk_start + end, "text": piece_text}
+                        kept_until = max(kept_until, item["end"])
+                        send({"type": "segment", **item})
+                        # Where the segment and its words are in the kept audio (chunk_done is where this chunk starts there).
+                        audio_words = [(chunk_done + word_start, chunk_done + word_end, word) for word_start, word_end, word in piece_words]
+                        result_segments.append({**item, "_audio_start": chunk_done + start, "_audio_end": chunk_done + end, "_words": audio_words})
                     processed = min(duration, chunk_done + float(segment.end))
                     send({"type": "progress", "stage": "transcribing", "processed_seconds": processed, "progress": progress_for(processed, duration), "segment_count": len(result_segments)})
             except ClientGone:
                 raise
             except Exception as exc:
                 raise ProcessingError(f"Whisper mislukt: {exc}") from exc
+            # The next chunk starts where the last kept sentence ends, so no sentence is cut in two or said twice.
+            next_start = min(window_end, kept_until)
             if keep_audio:
-                audio_parts.append((audio_file, chunk_duration))
+                audio_parts.append((audio_file, next_start - chunk_start))
             else:
                 audio_file.unlink(missing_ok=True)
-            chunk_start += chunk_duration
+            chunk_start = next_start
         done += span_end - span_start
 
     return {"segments": result_segments, "duration": duration, "audio_parts": audio_parts}
@@ -316,6 +385,7 @@ def add_speakers(transcript: dict[str, Any], send: Callable[[dict[str, Any]], No
             turns, voices = diarization.diarize(pipeline, waveform, on_progress)
         del waveform
         speakers, summary = diarization.assign_speakers([(segment["_audio_start"], segment["_audio_end"]) for segment in segments], turns, voices)
+        splits = diarization.split_by_speaker(segments, turns)
     except ClientGone:
         raise
     except Exception as exc:
@@ -325,8 +395,9 @@ def add_speakers(transcript: dict[str, Any], send: Callable[[dict[str, Any]], No
         return
     for segment, speaker in zip(segments, speakers):
         segment["speaker"] = speaker
-    print(f"worker: diarized {len(segments)} segments, {len(summary)} speakers", flush=True)
-    send({"type": "speakers", "segment_speakers": speakers, "speakers": summary})
+    print(f"worker: diarized {len(segments)} segments, {len(summary)} speakers, {len(splits)} segments split between speakers", flush=True)
+    # segment_splits: a segment where the speaker changes halfway, as its parts (index => parts), replacing it.
+    send({"type": "speakers", "segment_speakers": speakers, "speakers": summary, "segment_splits": {str(index): parts for index, parts in splits.items()}})
 
 
 class WorkerRequestHandler(BaseHTTPRequestHandler):
@@ -435,6 +506,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             ranges = payload.get("ranges")
             if ranges is not None:
                 ranges = [[float(start), float(end)] for start, end in ranges]
+            hotwords = str(payload.get("hotwords") or "").strip() or None
         except (KeyError, TypeError, ValueError) as exc:
             self.send_json_error(f"Ongeldig transcriptieverzoek: {exc}", status=400)
             return
@@ -444,7 +516,7 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         try:
-            transcribe_stream(stream_id, video_path, self.write_event, ranges, video_url)
+            transcribe_stream(stream_id, video_path, self.write_event, ranges, video_url, hotwords)
         except ClientGone:
             print(f"worker: stream {stream_id}: the app closed the connection (cancelled), stopped", flush=True)
         except (ProcessingError, RuntimeError, ValueError) as exc:

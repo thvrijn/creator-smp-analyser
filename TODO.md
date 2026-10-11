@@ -10,7 +10,10 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 ## Event Extraction-basis (plan stap afronden)
 
 - [ ] Event-extractie testen op een echte SMP-stream met ontmoetingen. Stream 41 is een tips-video, en de huidige prompt is getest op zelfgemaakte SMP-fragmenten.
-- [ ] Later, voor cross-stream matching: genoemde spelers als apart veld opslaan (nu alleen in titel en beschrijving)
+- [ ] Later, voor cross-stream matching: genoemde spelers als apart veld opslaan (nu alleen in titel en beschrijving). Liefst als koppeltabel event ↔ speler met een rol (zelf aanwezig, genoemd, slachtoffer…), zodat events per speler te filteren zijn.
+- [ ] Het citaat (`quote`) van een event bewaren als bewijs. De worker controleert het al (`quote_found`), maar daarna gooit de app het weg. Tonen bij het event, zodat je ziet waarop het model zich baseerde.
+- [ ] Per event vastleggen of het **gebeurd**, **gepland** of **beweerd** is ("we gaan morgen het noorden aanvallen" is geen aanval, "hij heeft mijn kist gestolen" is een beschuldiging en geen bewezen diefstal). Veld in de prompt en in de tabel, en in de UI zichtbaar. Nodig om later plannen aan uitgevoerde acties te koppelen. Meten met `make prompt-eval`.
+- [ ] Per analyse bewaren met welk model en welke promptversie ze gemaakt is (bijv. `event_extraction_model`, `event_extraction_prompt_version` op `streams`, de versie als constante in `event_extractor.py`). Dan zie je welke streams na een promptwijziging opnieuw geanalyseerd moeten worden.
 
 ## Features
 
@@ -20,7 +23,10 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 - [ ] Downloads op een eigen queue-worker zetten, zodat ze transcripties niet ophouden
 - [ ] Het praten met de chat vóór de gameplay overslaan bij transcriptie of analyse. Daarvoor moet bekend zijn wanneer de speler zelf joinde, en creatorsmp.nl geeft alleen wanneer iemand vertrok en hoe lang hij speelde. Optie: OCR van "<speler> joined the game" in de eigen POV, of zelf een startpunt per stream zetten.
 - [ ] Knop om alle VOD's van een speler in één keer audio te laten ophalen
-- [ ] Deaths van creatorsmp.nl ophalen voor de tijdlijn (`/api/events/{id}/deaths`: exacte tijd en bericht, geen OCR nodig)
+- [ ] Team (Noord/Zuid) en deaths tonen: ze staan in de database (`CreatorSmpTeamSeeder`, `CreatorSmpDeathSeeder`, eenmalig opgehaald op 11 okt) en het team staat in het contextpaneel. Team en "gestorven" staan nu op de spelerskaarten, en de stand per team en de laatste deaths op het dashboard. Nog: team op de spelerpagina, deaths op de tijdlijn en bij de speler, en levend / uitgeschakeld / Verliezersrealm. Nieuwe deaths komen er niet vanzelf bij: met de hand bijwerken, of eerst toestemming vragen aan de organisatie (de site weert AI-crawlers in `robots.txt`).
+- [ ] Seizoensachtergrond meegeven aan de analyse (kort, voor het 8B-model): hardcore, teams Noord/Zuid, de muur met doolhoven, Nether/End alleen via de doolhoven, de Verliezersrealm, het team van de streamer. Let op: de grounding weigert nu "Nether"/"End" als de streamer ze niet noemt; dat blijft goed, maar de prompt mag ze niet als voorbeeld noemen (zie AGENTS.md). Een dood in het eerste speeluur (grace period) is niet definitief. Meten met `make prompt-eval`.
+- [ ] De tijdlijn van creatorsmp.nl (`/timeline`, op 11 okt nog leeg) overnemen zodra die gevuld is (met de hand of met toestemming, zie het punt hierboven): de main events (muur open, Verliezersrealm, finales) op de tijdlijn en als context voor de analyse.
+- [ ] De vier afleveringen vastleggen: week 1 (4–10 okt), week 2 (11–17 okt), week 3 (18–24 okt) en de finale (25 okt). Per aflevering de clips van die week op servertijd (de videobouwer doet dat al), een weekverhaal als basis voor het kiezen, en export naar DaVinci. Vervangt de voorbeeldinhoud van de Afleveringen-pagina.
 - [ ] Tijdlijn-pagina bouwen (nu placeholder), zoals in een video-editor (DaVinci Resolve): streams kiezen, elke stream is een spoor onder elkaar, precies uitgelijnd op servertijd (`started_at` + `video_offset_seconds` + filetijd, zoals `SharedMoments`). Eén afspeelkop over alle sporen, zodat je op elk moment ziet wat er in elke stream gebeurt.
   - Per spoor: waar de stream live was, waar het SMP-deel/transcript is (`transcription_ranges`), events als blokjes, clips, "Zelfde moment"-koppelingen als lijnen tussen sporen, en wie er praat (sprekers als gekleurde stukjes, herkende spelers met naam).
   - Inzoomen van een hele dag naar seconden; klikken op een event springt de afspeelkop erheen.
@@ -35,9 +41,19 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
   - Laat eerst zien hoeveel bestanden en hoeveel GB het gaat om, en vraag om bevestiging (verwijderen is onomkeerbaar)
   - Ruim daarna ook de lege `streams/<id>/`-mappen op
   - Toon na afloop hoeveel er is verwijderd
-- [ ] Events-overzicht uitwerken (`resources/js/Pages/Events/Index.vue` is nog minimaal)
-- [ ] Overview-pagina vullen met echte statistieken (nu nog statische placeholder)
-- [ ] Player-pagina uitbreiden (bijv. events en tijdlijn per player)
+- [ ] Voorbeelddata uit het nieuwe ontwerp echt maken (gemarkeerd met "voorbeeld" in de UI, zie `streamAnalysis.ts`):
+  - Relevantie (0-100) per event laten bepalen door de analyse: hoe belangrijk het is voor het verhaal (nu afgeleid uit type, zekerheid en lengte)
+  - Events nakijken: status per event (nieuw, goedgekeurd, afgewezen) en een event zelf corrigeren of toevoegen. Let op: een nieuwe analyse vervangt nu alle events van de stream. Goedgekeurde, gecorrigeerde en handmatige events moeten blijven staan, en een afgewezen event mag niet terugkomen (bijv. vergelijken op overlappende segmenten, zoals de dedupe).
+  - Per speler: kamp, doelen en open vragen; relaties tussen spelers (bondgenoot/rivaal). Altijd afgeleid uit events met een verwijzing ernaar (bewijs), en in de UI te zien als afgeleid door de AI, niet als feit.
+  - "Events koppelen" en "Context bijwerken" als echte stappen in de verwerking
+  - Seizoenkeuze en meldingen in de topbalk
+  - Verhaallijnen- en Afleveringen-pagina (nu voorbeeldinhoud). Een verhaallijn bestaat uit events (uit meerdere streams en POV's), met een status (loopt, afgerond) en open vragen, niet uit losse AI-tekst.
+- [ ] Events-overzicht uitwerken (`resources/js/Pages/Events/Index.vue` is nog minimaal): filteren op speler, stream, type, dag en status, en per event de andere POV's ("Zelfde moment") ernaast.
+- [ ] Player-pagina verder uitbreiden: het verhaal per stream, wie de speler tegenkwam en deaths staan er nu. Nog: de verhaallijnen waarin de speler voorkomt (zodra die echt bestaan), en een doorlopend verhaal over alle hoofdstukken heen (zie de story-vision: de samenvatting van het vorige hoofdstuk als context voor het volgende).
+- [ ] Een VOD die Twitch heeft verwijderd bij de sync als "verlopen" markeren in plaats van een kapotte player te tonen. (De waarschuwing op het dashboard voordat een VOD verloopt is klaar.)
+- [ ] Per worker tonen welke modellen geladen zijn (Whisper, Qwen, pyannote): de worker stuurt het mee in de heartbeat, de Instellingen-pagina en het Bezig-blok laten het zien. Handig om te zien waarom een taak nog op het laden van een model wacht.
+
+- [ ] pyannote 4 (`speaker-diarization-community-1`): getest op 20 min van stream 8 (toegang werkt nu). Even snel, iets minder RAM, 3 sprekers waar 3.1 er 5 vond; uit de tekst alleen geen duidelijke winnaar. Alleen overstappen na luisteren naar de regels waar ze het oneens zijn. Kost een torch 2.8-rebuild en nieuwe stemembeddings (alles opnieuw transcriberen).
 
 ## Technisch
 
@@ -57,6 +73,10 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 - Spelernamen in het verhaal en de events koppelen aan de spelerlijst: het model schrijft soms "Egbertlive" naast "Egbert" of "Jeremy Frieser" naast "Jeremy".
 - Verhalen van meerdere streams van dezelfde dag samenvoegen tot één verhaallijn van de server (alle POV's samen, met "Zelfde moment"-koppelingen).
+- Eén gebeurtenis op de server met meerdere bronnen: events uit verschillende streams die over hetzelfde moment gaan (nu alleen live gekoppeld door `SharedMoments`) opslaan als één gebeurtenis met meerdere POV's. Basis voor verhaallijnen en voor het kiezen van de beste POV bij een clip.
+- Oorzaak en gevolg tussen events: een plan in de ene stream koppelen aan de uitvoering later (in een andere stream), of een aanval aan de wraak erna. Als voorstel van de AI met bewijs, dat je bevestigt of afwijst. Vereist eerst gebeurd/gepland/beweerd per event.
+- Een aflevering laten voorstellen uit een verhaallijn: opbouw, keerpunt, gevolg, welke POV per moment, en welke achtergrond de kijker mist. Niet alleen de events met de hoogste relevantie.
+- Eén stuk of event opnieuw laten analyseren (bijv. met meer context eromheen) in plaats van de hele stream.
 
 ## Klaar
 

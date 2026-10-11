@@ -10,10 +10,31 @@ from model_manager import ModelManager
 
 
 class FakeSegment:
-    def __init__(self, start: float, end: float, text: str) -> None:
+    def __init__(self, start: float, end: float, text: str, words: list | None = None, no_speech_prob: float = 0.0, avg_logprob: float = -0.2) -> None:
         self.start = start
         self.end = end
         self.text = text
+        self.words = words
+        self.no_speech_prob = no_speech_prob
+        self.avg_logprob = avg_logprob
+
+
+class FakeWord:
+    def __init__(self, start: float, end: float, word: str) -> None:
+        self.start = start
+        self.end = end
+        self.word = word
+
+
+class ScriptedModel:
+    """Returns the given segments for every chunk, and remembers the options of each call."""
+    def __init__(self, segments: list) -> None:
+        self.segments = segments
+        self.calls: list[dict] = []
+
+    def transcribe(self, _audio_path: str, **kwargs):
+        self.calls.append(kwargs)
+        return iter(self.segments), object()
 
 
 class FakeModel:
@@ -29,6 +50,10 @@ class WorkerTest(unittest.TestCase):
         models = patch.object(entrypoint, "MODELS", ModelManager(release_memory=lambda: None))
         models.start()
         self.addCleanup(models.stop)
+        # One piece at a time, like the CPU: batching has its own test.
+        batch = patch.object(entrypoint, "WHISPER_BATCH_SIZE", 0)
+        batch.start()
+        self.addCleanup(batch.stop)
 
     def serve(self, body: bytes, status: int = 200) -> str:
         class App(BaseHTTPRequestHandler):
@@ -187,7 +212,7 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(events[-2], {"type": "speakers", "segment_speakers": [0, 1], "speakers": [
             {"speaker": 0, "seconds": 20.0, "embedding": [1.0]},
             {"speaker": 1, "seconds": 10.0, "embedding": None},
-        ]})
+        ], "segment_splits": {}})
         self.assertEqual(events[-1]["type"], "completed")
 
     def test_a_failed_diarization_keeps_the_transcript_without_speakers(self) -> None:
@@ -227,6 +252,97 @@ class WorkerTest(unittest.TestCase):
 
         with self.assertRaises(entrypoint.ClientGone):
             self.transcribe_with_diarization(diarize)
+
+    def transcribe_scripted(self, model, duration: float = 1000.0, **kwargs) -> tuple[dict, object]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "stream.mp4").write_bytes(b"video")
+            with patch.object(entrypoint, "STORAGE_ROOT", root), \
+                    patch.object(entrypoint, "probe_duration", return_value=duration), \
+                    patch.object(entrypoint, "extract_audio") as extract_audio, \
+                    patch.object(entrypoint, "load_whisper_model", return_value=model):
+                result = entrypoint.transcribe_stream(12, "stream.mp4", **kwargs)
+        return result, extract_audio
+
+    def test_a_sentence_over_the_end_of_a_chunk_is_kept_whole_and_the_next_chunk_starts_after_it(self) -> None:
+        # Chunk time: one sentence runs over the 300 s mark, the next starts in the overlap.
+        model = ScriptedModel([FakeSegment(290.0, 310.0, "Over de grens"), FakeSegment(311.0, 315.0, "In de overlap")])
+
+        result, extract_audio = self.transcribe_scripted(model, duration=400.0)
+
+        # Each chunk is extracted with 30 s extra; the second starts where the kept sentence ended.
+        self.assertEqual([call.args[3:] for call in extract_audio.call_args_list], [(330.0, 0.0), (90.0, 310.0)])
+        # The script's sentences fall after the second chunk's own end there, so it adds none.
+        self.assertEqual([(segment["start"], segment["text"]) for segment in result["segments"]], [(290.0, "Over de grens")])
+
+    def test_whisper_hallucinations_are_dropped(self) -> None:
+        model = ScriptedModel([
+            FakeSegment(1.0, 4.0, "Ondertiteld door de Amara.org-gemeenschap"),
+            FakeSegment(5.0, 9.0, "Bedankt voor het kijken.", no_speech_prob=0.9, avg_logprob=-1.4),
+            FakeSegment(10.0, 12.0, "Bedankt voor het kijken, tot morgen!"),
+        ])
+
+        result, _extract = self.transcribe_scripted(model, duration=100.0)
+
+        self.assertEqual([segment["text"] for segment in result["segments"]], ["Bedankt voor het kijken, tot morgen!"])
+
+    def test_a_long_segment_is_cut_after_sentence_ends(self) -> None:
+        # One 14 s batched segment of three sentences; pieces of at least 3 s.
+        words = [FakeWord(i * 1.0, i * 1.0 + 0.8, w) for i, w in enumerate([" Ja.", " Ja.", " Ga", " je", " mee", " naar", " de", " muur?", " Nee,", " ik", " blijf", " hier", " vandaag.", " Oké."])]
+        model = ScriptedModel([FakeSegment(0.0, 13.8, "Ja. Ja. Ga je mee naar de muur? Nee, ik blijf hier vandaag. Oké.", words)])
+
+        result, _extract = self.transcribe_scripted(model, duration=100.0)
+
+        self.assertEqual([(segment["start"], segment["end"], segment["text"]) for segment in result["segments"]], [
+            (0.0, 7.8, "Ja. Ja. Ga je mee naar de muur?"),
+            (8.0, 13.8, "Nee, ik blijf hier vandaag. Oké."),
+        ])
+
+    def test_hotwords_and_word_times_are_asked_from_whisper(self) -> None:
+        model = ScriptedModel([])
+
+        self.transcribe_scripted(model, duration=100.0, hotwords="Morrog, Egbertlive")
+
+        self.assertEqual(model.calls, [{"language": entrypoint.LANGUAGE, "vad_filter": True, "word_timestamps": True, "hotwords": "Morrog, Egbertlive"}])
+
+    def test_on_a_gpu_whisper_decodes_in_batches_with_sentence_timestamps(self) -> None:
+        calls = []
+
+        class FakeBatched:
+            def __init__(self, model) -> None:
+                self.model = model
+
+            def transcribe(self, _audio_path: str, **kwargs):
+                calls.append(kwargs)
+                return iter([]), object()
+
+        with patch.object(entrypoint, "WHISPER_BATCH_SIZE", 8), patch.object(entrypoint, "DEVICE", "cuda"), \
+                patch.object(entrypoint, "BatchedInferencePipeline", FakeBatched):
+            self.transcribe_scripted(ScriptedModel([]), duration=100.0)
+
+        self.assertEqual(calls[0]["batch_size"], 8)
+        self.assertFalse(calls[0]["without_timestamps"])
+        self.assertTrue(calls[0]["word_timestamps"])
+
+    def test_a_segment_with_two_speakers_is_split_where_the_speaker_changes(self) -> None:
+        words = [FakeWord(10.0 + i * 0.5, 10.4 + i * 0.5, w) for i, w in enumerate([" Waar", " is", " Lars", " eigenlijk?", " Hier", " ben", " ik", " gewoon!"])]
+        model = ScriptedModel([FakeSegment(10.0, 13.9, "Waar is Lars eigenlijk? Hier ben ik gewoon!", words)])
+        events: list[dict] = []
+
+        def diarize(_pipeline, _waveform, _on_progress):
+            return [(9.0, 11.9, "STREAMER"), (11.95, 14.0, "LARS"), (20.0, 30.0, "STREAMER")], {"STREAMER": None, "LARS": None}
+
+        with patch.object(entrypoint.diarization, "enabled", return_value=True), \
+                patch.object(entrypoint.diarization, "read_audio", return_value=None), \
+                patch.object(entrypoint.diarization, "load_pipeline", return_value=object()), \
+                patch.object(entrypoint.diarization, "diarize", side_effect=diarize):
+            self.transcribe_scripted(model, duration=100.0, emit=events.append, ranges=[[50, 150]])
+
+        speakers = next(event for event in events if event["type"] == "speakers")
+        self.assertEqual(speakers["segment_splits"], {"0": [
+            {"start": 60.0, "end": 61.9, "text": "Waar is Lars eigenlijk?", "speaker": 0},
+            {"start": 62.0, "end": 63.9, "text": "Hier ben ik gewoon!", "speaker": 1},
+        ]})
 
     def test_ranges_are_clipped_to_the_file(self) -> None:
         self.assertEqual(entrypoint.transcription_spans(None, 50.0), [(0.0, 50.0)])

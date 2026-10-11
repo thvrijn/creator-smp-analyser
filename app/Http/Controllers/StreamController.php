@@ -5,16 +5,17 @@ namespace App\Http\Controllers;
 use App\Http\Requests\StoreStreamRequest;
 use App\Http\Resources\StreamResource;
 use App\Jobs\ExtractStreamEventsJob;
-use App\Jobs\TranscribeStreamJob;
 use App\Models\Event;
 use App\Models\Player;
 use App\Models\Stream;
 use App\Services\SharedMoments;
 use App\Services\StreamJobCanceller;
+use App\Services\StreamPipeline;
 use App\Services\StreamSpeakers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
@@ -86,46 +87,11 @@ class StreamController extends Controller
         return $this->backToStreams()->with('success', 'Stream verwijderd.');
     }
 
-    public function transcribe(Stream $stream): RedirectResponse
+    public function transcribe(Stream $stream, StreamPipeline $pipeline): RedirectResponse
     {
-        if (blank($stream->video_path)) {
-            return $this->backToStreams()->with('error', 'Deze stream heeft geen videobestand.');
-        }
-        if (in_array($stream->transcription_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('transcription_status')) {
-            return $this->backToStreams()->with('error', 'Deze stream staat al in de wachtrij of wordt al getranscribeerd.');
-        }
-        // A new transcript replaces the segments a running analysis is linking its events to.
-        if (in_array($stream->event_extraction_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('event_extraction_status')) {
-            return $this->backToStreams()->with('error', 'Deze stream wordt nog geanalyseerd. Transcribeer opnieuw als de analyse klaar is.');
-        }
-        if (! Storage::disk(config('filesystems.default'))->exists($stream->video_path)) {
-            return $this->backToStreams()->with('error', 'De streamvideo bestaat niet.');
-        }
+        $error = $pipeline->transcribe($stream);
 
-        try {
-            $stream->forceFill([
-                'transcription_status' => 'queued',
-                'transcription_error' => null,
-                'transcribed_at' => null,
-                'transcription_stage' => 'queued',
-                'transcription_progress' => 0,
-                'transcription_processed_seconds' => 0,
-                'transcription_duration_seconds' => null,
-                'transcription_segment_count' => 0,
-                'transcription_started_at' => null,
-                'transcription_eta_seconds' => null,
-            ])->save();
-            TranscribeStreamJob::dispatch($stream->id);
-        } catch (\Throwable $exception) {
-            $stream->forceFill([
-                'transcription_status' => 'failed',
-                'transcription_error' => 'De transcriptie kon niet aan de wachtrij worden toegevoegd: '.$exception->getMessage(),
-            ])->save();
-
-            return $this->backToStreams()->with('error', 'Transcriptie kon niet aan de wachtrij worden toegevoegd.');
-        }
-
-        return $this->backToStreams()->with('success', 'Transcriptie toegevoegd aan de wachtrij.');
+        return $this->backToStreams()->with($error === null ? 'success' : 'error', $error ?? 'Transcriptie toegevoegd aan de wachtrij.');
     }
 
     public function transcriptionStatus(Stream $stream): JsonResponse
@@ -154,35 +120,11 @@ class StreamController extends Controller
         ]);
     }
 
-    public function extractEvents(Stream $stream): RedirectResponse
+    public function extractEvents(Stream $stream, StreamPipeline $pipeline): RedirectResponse
     {
-        if ($stream->transcription_status !== 'completed' || $stream->transcriptSegments()->doesntExist()) {
-            return $this->backToStreams()->with('error', 'Complete transcriptie is nodig voordat events kunnen worden geëxtraheerd.');
-        }
-        if (in_array($stream->event_extraction_status, ['queued', 'waiting', 'processing'], true) && ! $stream->isStalled('event_extraction_status')) {
-            return $this->backToStreams()->with('error', 'Event-extractie staat al in de wachtrij of is bezig voor deze stream.');
-        }
+        $error = $pipeline->extract($stream);
 
-        try {
-            $stream->forceFill([
-                'event_extraction_status' => 'queued',
-                'event_extraction_error' => null,
-                'event_extraction_chunks_done' => 0,
-                'event_extraction_chunks_total' => null,
-                'event_extraction_started_at' => null,
-                'event_extraction_completed_at' => null,
-            ])->save();
-            ExtractStreamEventsJob::dispatch($stream->id);
-        } catch (\Throwable $exception) {
-            $stream->forceFill([
-                'event_extraction_status' => 'failed',
-                'event_extraction_error' => 'De event-extractie kon niet aan de wachtrij worden toegevoegd: '.$exception->getMessage(),
-            ])->save();
-
-            return $this->backToStreams()->with('error', 'Event-extractie kon niet aan de wachtrij worden toegevoegd.');
-        }
-
-        return $this->backToStreams()->with('success', 'Event-extractie toegevoegd aan de wachtrij.');
+        return $this->backToStreams()->with($error === null ? 'success' : 'error', $error ?? 'Event-extractie toegevoegd aan de wachtrij.');
     }
 
     /** Cancels the stream's transcription, analysis or audio download (task), queued or running. */
@@ -194,6 +136,36 @@ class StreamController extends Controller
     }
 
     private const SEGMENTS_PER_PAGE = 50;
+
+    /** @return array<int, array{start_time: float, end_time: float}> */
+    private function analysisParts(Stream $stream): array
+    {
+        $segments = $stream->transcriptSegments()->orderBy('start_time')->orderBy('id')->toBase()->get(['start_time', 'end_time'])->all();
+
+        return $segments === [] ? [] : array_map(
+            fn (array $chunk) => ['start_time' => (float) $chunk[0]->start_time, 'end_time' => (float) $chunk[array_key_last($chunk)]->end_time],
+            ExtractStreamEventsJob::chunks($segments),
+        );
+    }
+
+    /** @return object minute => {lines, speakers: speaker => lines} */
+    private function speechMinutes(Stream $stream): object
+    {
+        $minutes = [];
+        $rows = $stream->transcriptSegments()
+            ->selectRaw('floor(start_time / 60)::int as minute, speaker, count(*) as lines')
+            ->groupByRaw('1, 2')->toBase()->get();
+        foreach ($rows as $row) {
+            $minute = $minutes[$row->minute] ?? ['lines' => 0, 'speakers' => []];
+            $minute['lines'] += (int) $row->lines;
+            if ($row->speaker !== null) {
+                $minute['speakers'][$row->speaker] = (int) $row->lines;
+            }
+            $minutes[$row->minute] = $minute;
+        }
+
+        return (object) array_map(fn (array $minute) => ['lines' => $minute['lines'], 'speakers' => (object) $minute['speakers']], $minutes);
+    }
 
     /** The stream's media file for the player on the stream page; the response handles Range requests, so it can seek. */
     public function audio(Stream $stream): BinaryFileResponse
@@ -210,7 +182,7 @@ class StreamController extends Controller
         $search = trim((string) $request->query('search', ''));
         $search = $search !== '' ? mb_substr($search, 0, 100) : null;
 
-        $events = $stream->events()->with('transcriptSegments:id')->orderBy('start_time')->orderBy('id')->get();
+        $events = $stream->events()->with('transcriptSegments:id,speaker')->orderBy('start_time')->orderBy('id')->get();
         $selectedEvent = $request->filled('event') ? $events->firstWhere('id', (int) $request->query('event')) : null;
         abort_if($request->filled('event') && $selectedEvent === null, 404);
 
@@ -256,8 +228,28 @@ class StreamController extends Controller
                 'story_parts' => $stream->story_parts ?? [],
             ],
             'speakers' => app(StreamSpeakers::class)->list($stream),
-            // For naming a speaker after a player.
-            'players' => Player::query()->orderByRaw('lower(name)')->get(['id', 'name']),
+            // For naming a speaker after a player, and their photos in the context panel.
+            'players' => Player::query()->orderByRaw('lower(name)')->get(['id', 'name', 'photo_path', 'team', 'updated_at'])
+                ->map(fn (Player $player) => ['id' => $player->id, 'name' => $player->name, 'photo_url' => $player->photoUrl(), 'team' => $player->team]),
+            // Per minute of the file: how many lines and who says them, for the quiet stretches between events and the
+            // players in a selected moment of the Analysis tab.
+            'speech_minutes' => $this->speechMinutes($stream),
+            // The parts the analysis sent to the model (ExtractStreamEventsJob::chunks), for its details view.
+            'analysis_parts' => $this->analysisParts($stream),
+            // The context panel: what this player did in their other streams lately.
+            'player_events' => Event::query()
+                ->join('streams', 'streams.id', '=', 'events.stream_id')
+                ->where('streams.player_id', $stream->player_id)->where('streams.id', '!=', $stream->id)
+                ->orderByDesc('streams.started_at')->orderByDesc('events.confidence')->limit(5)
+                ->get(['events.id', 'events.stream_id', 'events.type', 'events.title', 'events.start_time', 'streams.started_at'])
+                ->map(fn (Event $event) => [
+                    'id' => $event->id,
+                    'stream_id' => $event->stream_id,
+                    'type' => $event->type,
+                    'title' => $event->title,
+                    // When it happened: the stream's start plus the event's time in it (close enough for "3 dagen geleden").
+                    'at' => Carbon::parse($event->getAttribute('started_at'))->addSeconds((int) $event->start_time)->toIso8601String(),
+                ])->values()->all(),
             'events' => $events->map(fn (Event $event) => [
                 'id' => $event->id,
                 'type' => $event->type,
@@ -267,6 +259,8 @@ class StreamController extends Controller
                 'end_time' => (float) $event->end_time,
                 'confidence' => (float) $event->confidence,
                 'segment_count' => $event->transcriptSegments->count(),
+                // Who speaks in it: speaker number => lines, most first.
+                'speakers' => (object) $event->transcriptSegments->whereNotNull('speaker')->countBy('speaker')->sortDesc()->all(),
             ])->values()->all(),
             // Per event: the same moment in other players' streams.
             'shared_moments' => (object) app(SharedMoments::class)->forStream($stream),

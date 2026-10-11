@@ -1,44 +1,46 @@
 <script setup lang="ts">
-import { Head, Link, router, usePage } from '@inertiajs/vue3';
-import { computed, ref } from 'vue';
+import { Head, Link, router } from '@inertiajs/vue3';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import EmptyState from '../../Components/EmptyState.vue';
+import FlashMessages from '../../Components/FlashMessages.vue';
 import PlayerAvatar from '../../Components/PlayerAvatar.vue';
 import PlayerFormModal from '../../Components/PlayerFormModal.vue';
 import AppLayout from '../../Layouts/AppLayout.vue';
-import type { EditablePlayer } from '../../types/streams';
+import { formatDate, type PlayerStats } from '../../types/streams';
 
-type Player = EditablePlayer & { streams_count: number; created_at: string };
-
-const props = defineProps<{ players: Player[] }>();
-const page = usePage<{ flash?: { success?: string; error?: string } }>();
+const props = defineProps<{ players: PlayerStats[] }>();
 const showForm = ref(false);
-const editingPlayer = ref<Player | null>(null);
-const successMessage = computed(() => page.props.flash?.success);
-const errorMessage = computed(() => page.props.flash?.error);
+const editingPlayer = ref<PlayerStats | null>(null);
+const menuFor = ref<number | null>(null);
+const closeMenu = () => { menuFor.value = null; };
+onMounted(() => document.addEventListener('click', closeMenu));
+onBeforeUnmount(() => document.removeEventListener('click', closeMenu));
 
-const formatDate = (value: string) => new Intl.DateTimeFormat('nl-NL', {
-    day: '2-digit', month: 'short', year: 'numeric',
-}).format(new Date(value));
+const search = ref('');
+const team = ref<'' | 'Noord' | 'Zuid'>('');
+// Case- and accent-insensitive, so "noel" finds "Noël Dekkers"; the Twitch channel counts too.
+const normalize = (value: string) => value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+const shownPlayers = computed(() => {
+    const term = normalize(search.value.trim());
+    return props.players.filter((player) => (!term || normalize(player.name + ' ' + (player.twitch_login ?? '')).includes(term)) && (!team.value || player.team === team.value));
+});
+// Players with streams first; both groups keep the filters and the name order.
+const groups = computed(() => [
+    { title: 'Met streams', players: shownPlayers.value.filter((player) => player.streams_count > 0) },
+    { title: 'Nog geen streams', players: shownPlayers.value.filter((player) => player.streams_count === 0) },
+].filter((group) => group.players.length));
+const plural = (count: number, word: string) => count + ' ' + word + (count === 1 ? '' : 's');
 
-const playerUrl = (player: Player) => `/players/${player.id}`;
-// The whole row opens the player page; links and buttons inside it keep their own action.
-const openPlayer = (event: MouseEvent, player: Player) => {
-    if ((event.target as HTMLElement).closest('a, button')) return;
-    router.visit(playerUrl(player));
-};
-
-const openForm = (player: Player | null) => {
+const openForm = (player: PlayerStats | null) => {
     editingPlayer.value = player;
     showForm.value = true;
 };
-
-const removePlayer = (player: Player) => {
+const removePlayer = (player: PlayerStats) => {
     if (player.streams_count > 0) {
-        window.alert(`${player.name} kan niet worden verwijderd. Deze speler heeft ${player.streams_count} stream${player.streams_count === 1 ? '' : 's'}. Verwijder de streams eerst of koppel ze aan een andere speler.`);
+        window.alert(`${player.name} kan niet worden verwijderd. Deze speler heeft ${plural(player.streams_count, 'stream')}. Verwijder de streams eerst of koppel ze aan een andere speler.`);
         return;
     }
-
-    if (window.confirm(`${player.name} verwijderen?`)) router.delete(playerUrl(player));
+    if (window.confirm(`${player.name} verwijderen?`)) router.delete('/players/' + player.id);
 };
 </script>
 
@@ -47,33 +49,54 @@ const removePlayer = (player: Player) => {
     <AppLayout title="Spelers" eyebrow="Analyse">
         <div class="streams-toolbar">
             <div>
-                <p class="section-kicker">Analyse</p>
-                <h2 class="page-section-title">Je spelers</h2>
-                <p class="muted-copy">Beheer de creators in je streambibliotheek.</p>
+                <p class="section-kicker">Creator SMP 4</p>
+                <h2 class="page-section-title">Spelers</h2>
+                <p class="muted-copy">Kies een speler om de streams, transcripts en events te zien.</p>
             </div>
             <button class="primary-button" type="button" @click="openForm(null)"><span>＋</span> Speler toevoegen</button>
         </div>
-
-        <div v-if="successMessage" class="success-banner" role="status">{{ successMessage }}</div>
-        <div v-if="errorMessage" class="error-banner" role="alert">{{ errorMessage }}</div>
-
-        <div v-if="props.players.length" class="streams-panel">
-            <div class="streams-table-wrap">
-                <table class="streams-table players-table">
-                    <thead><tr><th>Speler</th><th>Streams</th><th>Aangemaakt</th><th><span class="sr-only">Acties</span></th></tr></thead>
-                    <tbody>
-                        <tr v-for="player in props.players" :key="player.id" class="stream-row" @click="openPlayer($event, player)">
-                            <td><Link class="player-cell" :href="playerUrl(player)"><PlayerAvatar :name="player.name" :photo-url="player.photo_url" size="sm" /><span class="stream-title">{{ player.name }}</span></Link></td>
-                            <td>{{ player.streams_count }}</td>
-                            <td>{{ formatDate(player.created_at) }}</td>
-                            <td class="action-cell"><button class="text-action" type="button" @click="openForm(player)">Bewerken</button><button class="delete-button" type="button" @click="removePlayer(player)">Verwijderen</button></td>
-                        </tr>
-                    </tbody>
-                </table>
+        <FlashMessages />
+        <template v-if="players.length">
+            <div class="button-row player-filters">
+                <label class="sr-only" for="player-search">Spelers zoeken</label>
+                <input id="player-search" v-model="search" class="player-search" type="search" placeholder="Zoek speler…" />
+                <label class="sr-only" for="player-team">Team</label>
+                <select id="player-team" v-model="team" class="player-search player-team-filter"><option value="">Alle teams</option><option value="Noord">Team Noord</option><option value="Zuid">Team Zuid</option></select>
             </div>
-        </div>
-        <div v-else class="standalone-panel"><EmptyState title="Nog geen spelers" description="Voeg je eerste speler toe om de streambibliotheek te ordenen." /></div>
-
+            <section v-for="group in groups" :key="group.title" class="player-group" :aria-label="group.title">
+                <h3 class="section-kicker player-group-title">{{ group.title }} <span>{{ group.players.length }}</span></h3>
+                <div class="player-grid">
+                    <div v-for="player in group.players" :key="player.id" class="player-card-wrap">
+                        <Link class="player-card" :href="'/players/' + player.id">
+                            <div class="player-card-top">
+                                <PlayerAvatar :name="player.name" :photo-url="player.photo_url" size="lg" />
+                                <div class="player-card-heading">
+                                    <h3 class="player-card-name">{{ player.name }}</h3>
+                                    <p class="player-card-meta">{{ player.last_stream_at ? 'Laatste stream ' + formatDate(player.last_stream_at) : 'Nog geen streams' }}</p>
+                                    <span v-if="player.team" class="team-chip player-card-team">{{ player.team }}</span><span v-if="player.deaths_count" class="player-card-dead" :title="'Gestorven (' + player.deaths_count + '×). Een dood in de grace period is niet definitief.'">† gestorven</span>
+                                </div>
+                                <span v-if="player.active_streams_count" class="player-card-activity"><span class="live-dot" />{{ player.active_streams_count }} bezig</span>
+                            </div>
+                            <dl class="player-card-stats">
+                                <div><dt>Streams</dt><dd>{{ player.streams_count }}</dd></div>
+                                <div><dt>Getranscribeerd</dt><dd>{{ player.transcribed_streams_count }}<span>/{{ player.streams_count }}</span></dd></div>
+                                <div><dt>Events</dt><dd>{{ player.events_count }}</dd></div>
+                            </dl>
+                            <span class="player-card-link">{{ plural(player.streams_count, 'stream') }} <span>→</span></span>
+                        </Link>
+                        <div class="header-menu player-card-menu" @click.stop>
+                            <button class="icon-button" type="button" :aria-label="'Acties voor ' + player.name" aria-haspopup="menu" :aria-expanded="menuFor === player.id" @click="menuFor = menuFor === player.id ? null : player.id">⋯</button>
+                            <div v-if="menuFor === player.id" class="profile-dropdown" role="menu" @click="closeMenu">
+                                <button type="button" role="menuitem" @click="openForm(player)">Bewerken</button>
+                                <button type="button" role="menuitem" @click="removePlayer(player)">Verwijderen</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <div v-if="!groups.length" class="standalone-panel"><EmptyState title="Geen spelers gevonden" description="Geen speler past bij deze zoekopdracht." /></div>
+        </template>
+        <div v-else class="standalone-panel"><EmptyState title="Nog geen spelers" description="Voeg je eerste speler toe, of vul ze met de CreatorSmpPlayerSeeder." /></div>
         <PlayerFormModal v-model:open="showForm" :player="editingPlayer" />
     </AppLayout>
 </template>

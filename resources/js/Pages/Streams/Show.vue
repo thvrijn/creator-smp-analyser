@@ -7,24 +7,25 @@ import TwitchPlayer from '../../Components/TwitchPlayer.vue';
 import PlayerAvatar from '../../Components/PlayerAvatar.vue';
 import SpeakerEditor from '../../Components/SpeakerEditor.vue';
 import SpeakerText from '../../Components/SpeakerText.vue';
+import DemoBadge from '../../Components/DemoBadge.vue';
+import AnalysisParts from '../../Components/stream/AnalysisParts.vue';
+import ContextPanel from '../../Components/stream/ContextPanel.vue';
+import MomentList from '../../Components/stream/MomentList.vue';
+import StreamTimeline from '../../Components/stream/StreamTimeline.vue';
+import { buildMoments, categoryShort, demoRelation, durationLabel, relationLabels, relevanceLevel, speakersBetween, type Moment, type SpeechMinute } from '../../composables/streamAnalysis';
 import { matchReason, type Speaker } from '../../composables/speakers';
 import { streamDurationLabel, cancelTask, canCancel, isCancelling, downloadAudio, formatBytes, downloadLabel, eventBadgeClass, eventProgressDetails, isDownloadActive, retranscribe, eventExtractionLabel, eventTypeLabel, extractButtonLabel, extractEvents, formatSeconds, isEventExtractionActive, isTranscriptionActive, refreshStatus, stageLabel, stalledMessage, transcribe, transcribeButtonLabel, transcriptionBadgeClass, transcriptionLabel , type CancellableTask } from '../../composables/streamStatus';
 import AppLayout from '../../Layouts/AppLayout.vue';
-import { formatDate, type Stream } from '../../types/streams';
+import { formatDate } from '../../types/streams';
+import type { PlayerEvent, PlayerItem, SharedMoment, StreamDetail, StreamEvent } from '../../types/streamDetail';
 
-// story_*: the storyline of the stream written by the analysis, and a summary per part (file times).
-type StoryPart = { start_time: number; end_time: number; summary: string };
-type StreamDetail = Stream & { duration_seconds: number | null; segment_count: number; story_summary: string | null; story_players: string[]; story_parts: StoryPart[] };
-type StreamEvent = { id: number; type: string; title: string; description: string; start_time: number; end_time: number; confidence: number; segment_count: number };
 // original_text: what speech recognition wrote, when the text was corrected by hand.
 type Segment = { id: number; start_time: number; end_time: number; text: string; speaker: number | null; original_text: string | null };
 type PaginationLink = { url: string | null; label: string; active: boolean };
 type Clip = { id: number; event_id: number | null; title: string; start_seconds: number; end_seconds: number };
-// The same moment in another player's stream (SharedMoments): their event at that time, or else the time in their file.
-type SharedMoment = { stream_id: number; stream_title: string; player: { id: number; name: string; photo_url: string | null }; event_id: number | null; event_title: string | null; at: number; reasons: ('voice' | 'named' | 'voice_there' | 'named_there')[] };
 type Pagination = { data: Segment[]; current_page: number; last_page: number; per_page: number; total: number; from: number | null; to: number | null };
 
-const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speaker_filter: number | null; speakers: Speaker[]; players: { id: number; name: string }[]; shared_moments: Record<number, SharedMoment[]> }>();
+const props = defineProps<{ stream: StreamDetail; events: StreamEvent[]; clips: Clip[]; selected_event_id: number | null; highlighted_segment_ids: number[]; segments: Pagination; pagination: PaginationLink[]; search: string; speaker_filter: number | null; speakers: Speaker[]; players: PlayerItem[]; shared_moments: Record<number, SharedMoment[]>; speech_minutes: Record<string, SpeechMinute>; analysis_parts: { start_time: number; end_time: number }[]; player_events: PlayerEvent[] }>();
 const stream = reactive<StreamDetail>({ ...props.stream });
 watch(() => props.stream, (value) => { Object.assign(stream, value); }, { deep: true });
 const search = ref(props.search);
@@ -107,14 +108,16 @@ const selectedEvent = computed(() => props.events.find((event) => event.id === p
 
 // The tab lives in the URL (?tab=), so links and the back button work. Without one, a selected
 // event, search or page means the transcript is what you came for.
-type Tab = 'story' | 'events' | 'transcript' | 'clips';
-const tabs: Tab[] = ['story', 'events', 'transcript', 'clips'];
-const tabLabels: Record<Tab, string> = { story: 'Verhaal', events: 'Events', transcript: 'Transcript', clips: 'Clips' };
+// story: the old name of the overview (links from before keep working).
+type Tab = 'overview' | 'analysis' | 'transcript' | 'events' | 'context' | 'clips';
+const tabs: Tab[] = ['overview', 'analysis', 'transcript', 'events', 'context', 'clips'];
+const tabLabels: Record<Tab, string> = { overview: 'Overzicht', analysis: 'Analyse', transcript: 'Transcript', events: 'Events', context: 'Context', clips: 'Media' };
 const hasStory = computed(() => Boolean(stream.story_summary) || stream.story_parts.length > 0);
 const page = usePage();
 const query = computed(() => Object.fromEntries(new URL(page.url, window.location.origin).searchParams));
-const activeTab = computed<Tab>(() => tabs.includes(query.value.tab as Tab) ? query.value.tab as Tab : (query.value.clip ? 'clips' : query.value.event || query.value.at || query.value.search || query.value.page ? 'transcript' : hasStory.value ? 'story' : 'events'));
-const tabCount = (tab: Tab) => ({ story: stream.story_parts.length, events: props.events.length, transcript: stream.segment_count, clips: clips.value.length })[tab];
+const activeTab = computed<Tab>(() => query.value.tab === 'story' ? 'overview' : tabs.includes(query.value.tab as Tab) ? query.value.tab as Tab
+    : query.value.clip ? 'clips' : query.value.event || query.value.at || query.value.search || query.value.page ? 'transcript' : stream.has_transcript || props.events.length ? 'analysis' : 'overview');
+const tabCount = (tab: Tab) => ({ overview: null, analysis: null, transcript: stream.segment_count, events: props.events.length, context: null, clips: clips.value.length })[tab];
 // The storyline in paragraphs, and the players in it linked to their page when the name is known.
 const storyParagraphs = computed(() => (stream.story_summary ?? '').split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean));
 const storyPlayer = (name: string) => props.players.find((player) => player.name.toLowerCase() === name.toLowerCase());
@@ -209,6 +212,104 @@ const removeClip = (clip: Clip) => { if (window.confirm('"' + clip.title + '" ve
 const player = ref<InstanceType<typeof TwitchPlayer> | null>(null);
 const watchClip = async (clip: Clip) => { selectedClipId.value = clip.id; await nextTick(); player.value?.play(); };
 
+// The Analysis tab: the stream as moments (events at their real time, the quiet and silent stretches between them).
+// The selected moment drives the video preview and the rail; while the audio plays, the selection follows it.
+const fileLength = computed(() => Math.max(0, streamLength.value - offset.value));
+const moments = computed<Moment[]>(() => buildMoments({ events: props.events, length: fileLength.value, minutes: props.speech_minutes, parts: stream.story_parts }));
+const momentAt = (seconds: number) => moments.value.find((moment) => moment.kind === 'event' && moment.start <= seconds && seconds < moment.end)
+    ?? moments.value.find((moment) => moment.start <= seconds && seconds < moment.end);
+// The moment from the URL (?event=, ?at=), or else the most relevant event, or else the start.
+const initialMoment = () => (query.value.event && moments.value.find((moment) => moment.event?.id === Number(query.value.event)))
+    || (query.value.at && momentAt(Number(query.value.at)))
+    || [...moments.value].filter((moment) => moment.kind === 'event').sort((a, b) => (b.relevance ?? 0) - (a.relevance ?? 0))[0]
+    || moments.value.find((moment) => moment.kind === 'quiet') || moments.value[0];
+const selectedMomentKey = ref<string | null>(initialMoment()?.key ?? null);
+const currentMoment = computed(() => moments.value.find((moment) => moment.key === selectedMomentKey.value) ?? moments.value[0] ?? null);
+watch(audioTime, (time) => {
+    if (time === null || !audioPlaying.value) return;
+    const moment = momentAt(time);
+    if (moment && moment.key !== selectedMomentKey.value) selectedMomentKey.value = moment.key;
+});
+const playMoment = (moment: Moment) => { selectedMomentKey.value = moment.key; playFrom(moment.start); };
+const momentTranscript = (moment: Moment) => { if (moment.event) selectEvent(moment.event as StreamEvent); else router.visit(transcriptAt(moment.start), { preserveScroll: true }); };
+const momentClip = (moment: Moment) => {
+    const event = moment.event as StreamEvent | null;
+    if (!event) return;
+    const clip = eventClip(event);
+    if (clip) router.visit(clipUrl(clip), { preserveScroll: true }); else clipFromEvent(event);
+};
+const hasClip = (moment: Moment) => moment.event !== null && eventClip(moment.event as StreamEvent) !== undefined;
+const showDetails = ref(false);
+
+// Players: the stream's own player, and the others in it (recognised speakers, the storyline, the same moments).
+const playerById = (id: number | null) => props.players.find((item) => item.id === id);
+const playerByName = (name: string) => props.players.find((item) => item.name.toLowerCase() === name.toLowerCase());
+const allMoments = computed(() => Object.values(props.shared_moments).flat());
+// The stream's player with their team (the players list has it, the stream's player ref does not).
+const streamPlayer = computed<PlayerItem>(() => playerById(stream.player.id) ?? stream.player);
+const otherPlayers = computed<PlayerItem[]>(() => {
+    const ids = new Set<number>([
+        ...props.speakers.map((item) => item.player_id).filter((id): id is number => id !== null),
+        ...stream.story_players.map((name) => playerByName(name)?.id).filter((id): id is number => id !== undefined),
+        ...allMoments.value.map((moment) => moment.player.id),
+    ]);
+    ids.delete(stream.player.id);
+    return [...ids].map((id) => playerById(id)).filter((item): item is PlayerItem => item !== undefined);
+});
+// Who speaks in the selected moment, besides the streamer: a recognised or named player, or else "Spreker n".
+const momentPeople = computed(() => {
+    const moment = currentMoment.value;
+    if (!moment) return [];
+    const rows = moment.event
+        ? Object.entries(moment.event.speakers).map(([speaker, lines]) => ({ speaker: Number(speaker), lines })).sort((a, b) => b.lines - a.lines)
+        : speakersBetween(props.speech_minutes, moment.start, moment.end);
+    return rows.map((row) => {
+        const item = findSpeaker(row.speaker);
+        const playerId = item?.player_id ?? (row.speaker === 0 && !item?.named ? stream.player.id : null);
+        return { speaker: row.speaker, name: item?.name ?? speakerLabel(row.speaker), player: playerById(playerId), lines: row.lines };
+    }).filter((person) => person.player?.id !== stream.player.id).slice(0, 6);
+});
+// The players in an event: the streamer, players named in it or heard in it elsewhere, and "Onbekend" for an unknown voice.
+const namePattern = (name: string) => new RegExp('(^|[^\\p{L}\\p{N}])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}\\p{N}])', 'iu');
+const playersOf = (moment: Moment) => {
+    const event = moment.event as StreamEvent | null;
+    if (!event) return [];
+    const text = event.title + ' ' + event.description;
+    const names = new Set<string>([stream.player.name]);
+    props.players.filter((item) => item.name.length >= 3 && namePattern(item.name).test(text)).forEach((item) => names.add(item.name));
+    sharedMoments(event).forEach((moment) => names.add(moment.player.name));
+    for (const match of text.matchAll(/\b[Ss]preker (\d+)\b/g)) {
+        const item = findSpeaker(Number(match[1]));
+        names.add(item?.player_id ? item.name : 'Onbekend');
+    }
+    return [...names];
+};
+
+// The header: one status for the whole stream, the next step as the main button and everything else in the ⋯ menu.
+const overallStatus = computed(() => {
+    if (isDownloadActive(stream)) return { label: 'Audio ophalen', tone: 'active' };
+    if (isTranscriptionActive(stream)) return { label: stream.transcription_status === 'processing' ? 'Transcriberen' : transcriptionLabel(stream.transcription_status), tone: 'active' };
+    if (isEventExtractionActive(stream)) return { label: stream.event_extraction_status === 'processing' ? 'Analyseren' : eventExtractionLabel(stream.event_extraction_status), tone: 'active' };
+    if ([stream.transcription_status, stream.event_extraction_status, stream.video_download_status].includes('failed')) return { label: 'Mislukt', tone: 'failed' };
+    if (stream.event_extraction_status === 'completed') return { label: 'Geanalyseerd', tone: 'done' };
+    if (stream.transcription_status === 'completed') return { label: 'Getranscribeerd', tone: 'done' };
+    return { label: stream.status === 'Live' ? 'Live' : 'Nieuw', tone: 'idle' };
+});
+const headerProgress = computed(() => {
+    if (isDownloadActive(stream) && stream.video_download_status === 'processing') return { label: 'Audio ophalen', percent: stream.video_download_progress, details: '' };
+    if (isTranscriptionActive(stream) && stream.transcription_status === 'processing') return { label: 'Transcriptie', percent: Math.round(stream.transcription_progress), details: stageLabel(stream.transcription_stage) };
+    if (isEventExtractionActive(stream) && stream.event_extraction_progress !== null) return { label: 'Analysevoortgang', percent: stream.event_extraction_progress, details: eventProgressDetails(stream) };
+    return null;
+});
+const actionsOpen = ref(false);
+const closeActions = () => { actionsOpen.value = false; };
+const streamMeta = computed(() => [
+    formatDate(stream.started_at),
+    streamDurationLabel(stream) ? streamDurationLabel(stream) + (stream.status === 'Live' ? ' live' : '') : null,
+    stream.duration_seconds ? formatSeconds(stream.duration_seconds) + ' getranscribeerd' : null,
+    stream.video_file_size !== null ? formatBytes(stream.video_file_size) : null,
+].filter(Boolean));
+
 // While a job runs, poll the status and reload the page data once it finishes.
 let pollTimer: number | undefined;
 // The audio download's progress is only in the page data, so reload the stream while it runs.
@@ -250,11 +351,13 @@ onMounted(() => {
     if (heroTitle.value) titleObserver.observe(heroTitle.value);
     stickyObserver = new ResizeObserver(() => { stickyHeight.value = stickyBar.value?.offsetHeight ?? 0; });
     if (stickyBar.value) stickyObserver.observe(stickyBar.value);
+    document.addEventListener('click', closeActions);
 });
 onBeforeUnmount(() => {
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
     titleObserver?.disconnect();
     stickyObserver?.disconnect();
+    document.removeEventListener('click', closeActions);
 });
 // Queued, waiting or running jobs of this stream that can be cancelled (or are being cancelled).
 const cancellable = computed(() => ([
@@ -262,12 +365,11 @@ const cancellable = computed(() => ([
     { task: 'transcription', label: 'Transcriptie' },
     { task: 'event_extraction', label: 'Analyse' },
 ] as { task: CancellableTask; label: string }[]).filter((item) => canCancel(stream, item.task) || isCancelling(stream, item.task)));
-const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 </script>
 
 <template>
     <Head :title="stream.title" />
-    <AppLayout :title="stream.title" eyebrow="Stream">
+    <AppLayout :title="stream.title" bare>
         <div class="stream-page" :style="{ '--stream-sticky-bottom': stickyBottom + 'px' }">
         <header class="stream-compact" :class="{ 'stream-compact-visible': compact }" :inert="!compact || undefined">
             <button class="stream-compact-title" type="button" title="Naar boven" @click="scrollToTop">
@@ -280,81 +382,117 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
                 <span class="status-pair"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ isEventExtractionActive(stream) && stream.event_extraction_progress !== null ? stream.event_extraction_progress + '%' : eventExtractionLabel(stream.event_extraction_status) }}</span></span>
             </div>
         </header>
-        <Link class="back-link" :href="'/players/' + stream.player.id">← {{ stream.player.name }}</Link>
-        <section class="stream-hero">
-            <div class="stream-hero-text">
-                <p class="section-kicker">Stream</p>
-                <h2 ref="heroTitle" class="page-section-title">{{ stream.title }}</h2>
-                <p class="muted-copy"><Link class="inline-link" :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> · {{ formatDate(stream.started_at) }}<template v-if="stream.ended_at"> – {{ formatTime(stream.ended_at) }}</template><template v-if="streamDurationLabel(stream)"> · <strong class="stream-length-inline">{{ streamDurationLabel(stream) }}</strong><template v-if="stream.status === 'Live'"> live</template></template><template v-if="stream.duration_seconds"> · {{ formatSeconds(stream.duration_seconds) }} getranscribeerd</template> · {{ stream.segment_count }} segmenten · {{ events.length }} events</p>
-                <div class="stream-hero-statuses">
-                    <span v-if="stream.twitch_video_id" class="status-pair"><span class="transcription-stage">Audio</span><span class="transcription-badge" :class="'transcription-' + audioState.badge">{{ audioState.label }}</span></span>
-                    <span class="status-pair"><span class="transcription-stage">Transcript</span><span class="transcription-badge" :class="transcriptionBadgeClass(stream)">{{ transcriptionLabel(stream.transcription_status) }}</span><span v-if="isTranscriptionActive(stream)" class="transcription-stage">{{ stageLabel(stream.transcription_stage) }} · {{ Math.round(stream.transcription_progress) }}%</span></span>
-                    <span class="status-pair"><span class="transcription-stage">Events</span><span class="transcription-badge" :class="eventBadgeClass(stream)">{{ eventExtractionLabel(stream.event_extraction_status) }}</span><span v-if="isEventExtractionActive(stream) && stream.event_extraction_progress !== null" class="transcription-stage">{{ stream.event_extraction_progress }}% · {{ eventProgressDetails(stream) }}</span></span>
+        <div class="stream-layout">
+        <section class="stream-head">
+            <Link class="back-link" :href="'/players/' + stream.player.id">← Streams van {{ stream.player.name }}</Link>
+            <div class="stream-head-row">
+                <span class="stream-source-icon" :class="stream.twitch_video_id ? 'source-twitch' : 'source-upload'" :title="stream.twitch_video_id ? 'Twitch-VOD' : 'Geüpload bestand'" aria-hidden="true">
+                    <svg v-if="stream.twitch_video_id" viewBox="0 0 20 20"><path d="M4.5 2.5 3 5.5v10h3.5v2h2l2-2h3l4-4v-9h-13Zm11.5 8-2.5 2.5h-3.5l-2 2v-2H5V4h11v6.5ZM9 6.5h1.5v4H9v-4Zm4 0h1.5v4H13v-4Z" /></svg>
+                    <svg v-else viewBox="0 0 20 20"><path d="M10 13V4M6.5 7.5 10 4l3.5 3.5M4 13v2.5h12V13" /></svg>
+                </span>
+                <div class="stream-head-text">
+                    <h2 ref="heroTitle" class="stream-head-title" :title="stream.player.name + ' – ' + stream.title"><Link :href="'/players/' + stream.player.id">{{ stream.player.name }}</Link> – {{ stream.title }}</h2>
+                    <p class="stream-head-meta"><template v-for="(item, index) in streamMeta" :key="index"><span v-if="index > 0" class="meta-dot">•</span>{{ item }}</template></p>
                 </div>
-                <div v-if="!stream.video_path && stream.video_download_status === 'processing' && !stream.video_download_stalled" class="progress-track"><span :style="{ width: stream.video_download_progress + '%' }" /></div>
-                <div v-if="isEventExtractionActive(stream)" class="progress-track" :class="{ 'progress-indeterminate': stream.event_extraction_progress === null }"><span :style="stream.event_extraction_progress === null ? {} : { width: stream.event_extraction_progress + '%' }" /></div>
-                <p v-if="stream.worker_name" class="transcription-stage">Draait op worker {{ stream.worker_name }}</p>
-                <div v-if="cancellable.length > 0" class="stream-cancel-row">
-                    <template v-for="item in cancellable" :key="item.task">
-                        <span v-if="isCancelling(stream, item.task)" class="transcription-stage">{{ item.label }} wordt geannuleerd…</span>
-                        <button v-else class="cancel-link" type="button" @click="cancelTask(stream, item.task)">✕ {{ item.label }} annuleren</button>
-                    </template>
+                <div class="stream-head-side">
+                    <div class="stream-head-actions">
+                        <span class="state-pill" :class="'state-' + overallStatus.tone"><span class="state-pill-dot" />{{ overallStatus.label }}</span>
+                        <template v-if="overallStatus.tone !== 'active'">
+                        <button v-if="!stream.video_path && stream.twitch_video_id" class="primary-button" type="button" :disabled="isDownloadActive(stream) || !stream.ended_at" :title="stream.ended_at ? undefined : 'Sync de VOD\'s opnieuw als de stream voorbij is.'" @click="downloadAudio(stream)">{{ isDownloadActive(stream) ? 'Audio ophalen…' : 'Audio ophalen' }}</button>
+                        <button v-else-if="stream.transcription_status !== 'completed'" class="primary-button" type="button" :disabled="!stream.video_path || isTranscriptionActive(stream)" @click="transcribe(stream)">{{ transcribeButtonLabel(stream) }}</button>
+                        <button v-else class="primary-button" type="button" :disabled="!stream.has_transcript || isEventExtractionActive(stream)" @click="extractEvents(stream)">{{ extractButtonLabel(stream) }}</button>
+                        </template>
+                        <div class="header-menu" @click.stop>
+                            <button class="icon-button" type="button" title="Meer acties" aria-label="Meer acties" aria-haspopup="menu" :aria-expanded="actionsOpen" @click="actionsOpen = !actionsOpen">⋯</button>
+                            <div v-if="actionsOpen" class="profile-dropdown" role="menu" @click="actionsOpen = false">
+                                <button v-if="stream.transcription_status === 'completed'" type="button" role="menuitem" :disabled="!stream.video_path || isEventExtractionActive(stream)" @click="retranscribe(stream)">Opnieuw transcriberen</button>
+                                <button v-if="stream.transcription_status === 'completed'" type="button" role="menuitem" :disabled="!stream.has_transcript || isEventExtractionActive(stream)" @click="extractEvents(stream)">Opnieuw analyseren</button>
+                                <template v-for="item in cancellable" :key="item.task">
+                                    <button type="button" role="menuitem" :disabled="isCancelling(stream, item.task)" @click="cancelTask(stream, item.task)">{{ isCancelling(stream, item.task) ? item.label + ' wordt geannuleerd…' : '✕ ' + item.label + ' annuleren' }}</button>
+                                </template>
+                                <button type="button" role="menuitem" :disabled="!streamLength" @click="clipWholeStream">Hele stream als clip</button>
+                                <a v-if="stream.twitch_url" :href="stream.twitch_url" target="_blank" rel="noopener" role="menuitem">Bekijk op Twitch ↗</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="headerProgress" class="stream-head-progress">
+                        <span class="stream-head-progress-label">{{ headerProgress.label }}<span>{{ headerProgress.percent }}%</span></span>
+                        <span class="progress-track"><span :style="{ width: headerProgress.percent + '%' }" /></span>
+                        <span v-if="headerProgress.details || stream.worker_name" class="transcription-stage">{{ [headerProgress.details, stream.worker_name ? 'worker ' + stream.worker_name : ''].filter(Boolean).join(' · ') }}</span>
+                    </div>
+                    <span v-else-if="isTranscriptionActive(stream) || isEventExtractionActive(stream) || isDownloadActive(stream)" class="transcription-stage">{{ stream.worker_name ? 'Draait op worker ' + stream.worker_name : 'Wacht in de wachtrij' }}</span>
                 </div>
+            </div>
+            <div class="stream-head-errors">
                 <p v-if="stream.transcription_stalled || stream.event_extraction_stalled || stream.video_download_stalled" class="stream-error">{{ stalledMessage }}</p>
                 <p v-if="stream.video_download_error && !stream.video_path" class="stream-error">{{ stream.video_download_error }}</p>
                 <p v-if="stream.transcription_error" class="stream-error">{{ stream.transcription_error }}</p>
                 <p v-if="stream.event_extraction_error" class="stream-error">{{ stream.event_extraction_error }}</p>
             </div>
-            <button v-if="!stream.video_path && stream.twitch_video_id" class="primary-button" type="button" :disabled="isDownloadActive(stream) || !stream.ended_at" :title="stream.ended_at ? undefined : 'Sync de VOD\'s opnieuw als de stream voorbij is.'" @click="downloadAudio(stream)">{{ isDownloadActive(stream) ? 'Audio ophalen…' : 'Audio ophalen' }}</button>
-            <button v-else-if="stream.transcription_status !== 'completed'" class="primary-button" type="button" :disabled="!stream.video_path || isTranscriptionActive(stream)" @click="transcribe(stream)">{{ transcribeButtonLabel(stream) }}</button>
-            <div v-else class="stream-hero-actions">
-                <button class="secondary-button" type="button" :disabled="!stream.video_path || isEventExtractionActive(stream)" @click="retranscribe(stream)">Opnieuw transcriberen</button>
-                <button class="primary-button" type="button" :disabled="!stream.has_transcript || isEventExtractionActive(stream)" @click="extractEvents(stream)">{{ extractButtonLabel(stream) }}</button>
-            </div>
+            <FlashMessages />
         </section>
-        <FlashMessages />
 
-        <div ref="stickyBar" class="stream-sticky" :class="{ 'stream-sticky-compact': compact }">
-        <div v-if="stream.video_path" class="stream-audio">
-            <span class="transcription-stage">{{ stream.video_mime_type?.startsWith('audio/') ? 'Audio' : 'Video' }}<template v-if="stream.video_file_size !== null"> · {{ formatBytes(stream.video_file_size) }}</template></span>
-            <AudioPlayer ref="audio" :src="streamUrl + '/audio'" @time="audioTime = $event" @playing="audioPlaying = $event" />
-        </div>
-
-        <nav class="stream-tabs" aria-label="Onderdelen van de stream">
+        <nav ref="stickyBar" class="stream-tabs stream-tabs-bar" :class="{ 'stream-sticky-compact': compact }" aria-label="Onderdelen van de stream">
             <Link v-for="tab in tabs" :key="tab" class="stream-tab" :class="{ 'stream-tab-active': activeTab === tab }" :href="tabUrl(tab)" :aria-current="activeTab === tab ? 'page' : undefined" preserve-state preserve-scroll>
-                {{ tabLabels[tab] }}<span class="stream-tab-count">{{ tabCount(tab) }}</span>
+                {{ tabLabels[tab] }}<span v-if="tabCount(tab) !== null" class="stream-tab-count">{{ tabCount(tab) }}</span>
             </Link>
         </nav>
-        </div>
 
-        <section v-if="activeTab === 'story'" ref="panel" class="detail-panel stream-panel story-panel" aria-label="Verhaal">
-            <template v-if="hasStory">
-                <div v-if="storyParagraphs.length" class="story-summary">
-                    <p v-for="(paragraph, index) in storyParagraphs" :key="index"><SpeakerText :text="paragraph" :speakers="speakers" @pick="pickSpeaker($event)" /></p>
-                </div>
-                <div v-if="stream.story_players.length" class="story-players">
-                    <span class="transcription-stage">Spelers in dit verhaal</span>
-                    <template v-for="name in stream.story_players" :key="name">
-                        <Link v-if="storyPlayer(name)" class="story-player" :href="'/players/' + storyPlayer(name)!.id">{{ name }}</Link>
-                        <span v-else class="story-player">{{ name }}</span>
-                    </template>
-                </div>
-                <div v-if="stream.story_parts.length" class="story-parts">
-                    <h3 class="section-kicker">Per deel van de stream</h3>
-                    <div v-for="part in stream.story_parts" :key="part.start_time" class="story-part">
-                        <span class="event-time">{{ formatSeconds(part.start_time) }} – {{ formatSeconds(part.end_time) }}</span>
-                        <p><SpeakerText :text="part.summary" :speakers="speakers" @pick="pickSpeaker($event, part.start_time)" /></p>
-                        <span class="story-part-actions">
-                            <button v-if="stream.video_path" class="event-clip-button" type="button" title="Afspelen vanaf hier" @click="playFrom(part.start_time)">▶</button>
-                            <Link class="event-clip-button" :href="transcriptAt(part.start_time)" preserve-scroll>Transcript</Link>
-                        </span>
-                    </div>
-                </div>
-            </template>
-            <div v-else class="detail-empty">
-                <h3>Nog geen verhaal</h3>
-                <p>{{ stream.transcription_status === 'completed' ? 'Klik op “Analyseren”: de analyse schrijft op wat er in de game gebeurde, naast de events.' : 'Transcribeer eerst de stream en analyseer hem daarna.' }}</p>
+        <div class="stream-content">
+        <section v-if="activeTab === 'overview'" ref="panel" class="stream-panel overview-panel" aria-label="Overzicht">
+            <div class="overview-stats">
+                <div class="overview-stat"><span>Duur</span><strong>{{ streamDurationLabel(stream) ?? (stream.duration_seconds ? formatSeconds(stream.duration_seconds) : '—') }}</strong></div>
+                <div class="overview-stat"><span>Transcript</span><strong>{{ stream.segment_count }}</strong><small>zinnen</small></div>
+                <div class="overview-stat"><span>Events</span><strong>{{ events.length }}</strong></div>
+                <div class="overview-stat"><span>Sprekers</span><strong>{{ speakers.length }}</strong></div>
+                <div class="overview-stat"><span>Clips</span><strong>{{ clips.length }}</strong></div>
             </div>
+            <StreamTimeline v-if="moments.length > 1" :moments="moments" :selected="selectedMomentKey" :playhead="audioTime" @select="selectedMomentKey = $event" />
+            <div class="analysis-card story-panel">
+                <div class="analysis-card-head"><h3>Verhaal</h3></div>
+                <template v-if="hasStory">
+                    <div v-if="storyParagraphs.length" class="story-summary">
+                        <p v-for="(paragraph, index) in storyParagraphs" :key="index"><SpeakerText :text="paragraph" :speakers="speakers" @pick="pickSpeaker($event)" /></p>
+                    </div>
+                    <div v-if="stream.story_players.length" class="story-players">
+                        <span class="transcription-stage">Spelers in dit verhaal</span>
+                        <template v-for="name in stream.story_players" :key="name">
+                            <Link v-if="storyPlayer(name)" class="story-player" :href="'/players/' + storyPlayer(name)!.id">{{ name }}</Link>
+                            <span v-else class="story-player">{{ name }}</span>
+                        </template>
+                    </div>
+                    <div v-if="stream.story_parts.length" class="story-parts">
+                        <h3 class="section-kicker">Per deel van de stream</h3>
+                        <div v-for="part in stream.story_parts" :key="part.start_time" class="story-part">
+                            <span class="event-time">{{ formatSeconds(part.start_time) }} – {{ formatSeconds(part.end_time) }}</span>
+                            <p><SpeakerText :text="part.summary" :speakers="speakers" @pick="pickSpeaker($event, part.start_time)" /></p>
+                            <span class="story-part-actions">
+                                <button v-if="stream.video_path" class="event-clip-button" type="button" title="Afspelen vanaf hier" @click="playFrom(part.start_time)">▶</button>
+                                <Link class="event-clip-button" :href="transcriptAt(part.start_time)" preserve-scroll>Transcript</Link>
+                            </span>
+                        </div>
+                    </div>
+                </template>
+                <div v-else class="detail-empty">
+                    <h3>Nog geen verhaal</h3>
+                    <p>{{ stream.transcription_status === 'completed' ? 'Klik op “Analyseren”: de analyse schrijft op wat er in de game gebeurde, naast de events.' : 'Transcribeer eerst de stream en analyseer hem daarna.' }}</p>
+                </div>
+            </div>
+        </section>
+
+        <section v-else-if="activeTab === 'analysis'" ref="panel" class="stream-panel analysis-panel" aria-label="Analyse">
+            <StreamTimeline :moments="moments" :selected="selectedMomentKey" :playhead="audioTime" @select="selectedMomentKey = $event" />
+            <MomentList :moments="moments" :selected="selectedMomentKey" :analysed="stream.event_extraction_status === 'completed'" :can-play="Boolean(stream.video_path)" :speakers="speakers" :players-of="playersOf" :has-clip="hasClip"
+                @select="selectedMomentKey = $event" @play="playMoment" @transcript="momentTranscript" @clip="momentClip" @pick="(speaker, at) => pickSpeaker(speaker, at)" />
+            <div v-if="analysis_parts.length" class="details-toggle">
+                <button class="secondary-button" type="button" :aria-expanded="showDetails" @click="showDetails = !showDetails">{{ showDetails ? 'Analysedetails verbergen' : 'Analysedetails tonen' }}</button>
+                <span class="muted-inline">Wat het model per stuk van 5 minuten zag en schreef</span>
+            </div>
+            <AnalysisParts v-if="showDetails" :parts="analysis_parts" :stream="stream" :events="events" :speakers="speakers" :can-play="Boolean(stream.video_path)" @play="playFrom" @pick="(speaker, at) => pickSpeaker(speaker, at)" />
+        </section>
+
+        <section v-else-if="activeTab === 'context'" ref="panel" class="stream-panel" aria-label="Context">
+            <ContextPanel :player="streamPlayer" :player-events="player_events" :others="otherPlayers" :moments="allMoments" wide />
         </section>
 
         <section v-else-if="activeTab === 'events'" ref="panel" class="detail-panel stream-panel" aria-label="Events">
@@ -410,7 +548,7 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
             </div>
         </section>
 
-        <section v-else ref="panel" class="detail-panel stream-panel" aria-label="Transcript">
+        <section v-else-if="activeTab === 'transcript'" ref="panel" class="detail-panel stream-panel" aria-label="Transcript">
             <div v-if="selectedEvent" class="panel-heading"><p class="muted-copy">Gemarkeerd: <strong>{{ selectedEvent.title }}</strong></p><button class="secondary-button" type="button" @click="clearSelection">Wissen</button></div>
             <form class="transcript-search" @submit.prevent="submitSearch">
                 <label class="sr-only" for="transcript-search">Transcript doorzoeken</label>
@@ -460,6 +598,53 @@ const formatTime = (value: string) => new Intl.DateTimeFormat('nl-NL', { hour: '
                 </nav>
             </div>
         </section>
+        </div>
+
+        <aside class="stream-rail">
+            <div class="rail-media">
+                <section class="rail-card">
+                    <h3>{{ stream.twitch_video_id ? 'Video-preview' : 'Audio' }}</h3>
+                    <div v-if="stream.twitch_video_id && activeTab !== 'clips' && currentMoment" class="clip-player rail-video"><TwitchPlayer :video-id="stream.twitch_video_id" :start="offset + currentMoment.start" :end="offset + currentMoment.end" /></div>
+                    <p v-else-if="stream.twitch_video_id" class="muted-copy">De video staat bij Media.</p>
+                    <div v-if="stream.video_path" class="rail-audio">
+                        <span class="transcription-stage">{{ stream.video_mime_type?.startsWith('audio/') ? 'Audio' : 'Video' }}<template v-if="stream.video_file_size !== null"> · {{ formatBytes(stream.video_file_size) }}</template></span>
+                        <AudioPlayer ref="audio" :src="streamUrl + '/audio'" @time="audioTime = $event" @playing="audioPlaying = $event" />
+                    </div>
+                    <p v-else class="muted-copy">{{ stream.twitch_video_id ? 'Haal de audio op om mee te luisteren.' : 'Nog geen audio of video.' }}</p>
+                    <div v-if="currentMoment" class="rail-chunk">
+                        <span class="rail-label">Gekozen moment</span>
+                        <span class="rail-chunk-time"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6v4l2.5 1.5" /></svg>{{ formatSeconds(currentMoment.start) }} – {{ formatSeconds(currentMoment.end) }}<span class="muted-inline">{{ durationLabel(currentMoment.end - currentMoment.start) }}</span></span>
+                        <template v-if="currentMoment.event">
+                            <strong class="rail-moment-title"><SpeakerText :text="currentMoment.event.title" :speakers="speakers" @pick="pickSpeaker($event, currentMoment.start)" /></strong>
+                            <p><SpeakerText :text="currentMoment.event.description" :speakers="speakers" @pick="pickSpeaker($event, currentMoment.start)" /></p>
+                            <div class="rail-chunk-foot">
+                                <span class="tag-list"><span class="tag" :class="'tag-' + currentMoment.category">{{ categoryShort[currentMoment.category!] }}</span></span>
+                                <span v-if="currentMoment.relevance !== null" class="rail-relevance"><i :class="'relevance-dot-' + relevanceLevel(currentMoment.relevance)" />Relevantie: {{ currentMoment.relevance }}/100 <DemoBadge /></span>
+                            </div>
+                        </template>
+                        <template v-else>
+                            <strong class="rail-moment-title">{{ currentMoment.kind === 'silent' ? 'Geen spraak' : 'Rustig' }}</strong>
+                            <p v-for="(summary, index) in currentMoment.summaries" :key="index"><SpeakerText :text="summary" :speakers="speakers" @pick="pickSpeaker($event, currentMoment.start)" /></p>
+                            <p v-if="!currentMoment.summaries.length" class="muted-inline">{{ currentMoment.kind === 'silent' ? 'Niet getranscribeerd of stil.' : 'Gameplay en chat, geen verhaalmomenten.' }}</p>
+                        </template>
+                    </div>
+                </section>
+            </div>
+            <div class="rail-context">
+                <ContextPanel v-if="activeTab !== 'context'" :player="streamPlayer" :player-events="player_events" :others="otherPlayers" :moments="allMoments" />
+                <section class="rail-card">
+                    <h3>Spelers in dit moment</h3>
+                    <div v-if="momentPeople.length" class="chunk-people">
+                        <component :is="person.player ? Link : 'button'" v-for="person in momentPeople" :key="person.speaker" class="chunk-person" v-bind="person.player ? { href: '/players/' + person.player.id } : { type: 'button', title: 'Wie is dit?' }" @click="!person.player && pickSpeaker(person.speaker, currentMoment?.start ?? null)">
+                            <PlayerAvatar :name="person.name" :photo-url="person.player?.photo_url ?? null" size="sm" />
+                            <span><strong>{{ person.name }}</strong><span v-if="person.player" class="relation" :class="'relation-' + demoRelation(stream.player.id, person.player.id)">{{ relationLabels[demoRelation(stream.player.id, person.player.id)] }}</span><span v-else class="relation relation-neutral">Onbekend</span></span>
+                        </component>
+                    </div>
+                    <p v-else class="muted-copy">{{ speakers.length ? 'Alleen ' + stream.player.name + ' praat hier.' : 'Sprekers zijn nog niet herkend.' }}</p>
+                </section>
+            </div>
+        </aside>
+        </div>
         <div v-if="editedSpeaker && editorInModal" class="modal-backdrop" role="presentation" @click.self="editingSpeaker = null">
             <SpeakerEditor class="speaker-editor-modal" :stream-url="streamUrl" :speaker="editedSpeaker" :speakers="speakers" :players="players" :streamer-name="stream.player.name" @close="editingSpeaker = null">
                 <template v-if="pickedAt !== null">

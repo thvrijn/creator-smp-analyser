@@ -4,8 +4,8 @@ COMPOSE := docker compose
 
 ifeq ($(shell uname -s),Darwin)
 # macOS: Docker cannot reach the Apple GPU, so the worker runs natively (MLX on Metal) and
-# docker-compose.mac.yml leaves it out of Docker. Both exports also reach scripts/check.sh.
-export COMPOSE_FILE := docker-compose.yml:docker-compose.mac.yml
+# docker-compose.no-worker.yml leaves it out of Docker. Both exports also reach scripts/check.sh.
+export COMPOSE_FILE := docker-compose.yml:docker-compose.no-worker.yml
 export WORKER_PY := $(CURDIR)/scripts/worker-mac.sh
 WORKER_DIR := $(CURDIR)/worker
 WORKER_LOG := storage/logs/worker.log
@@ -19,20 +19,28 @@ WORKER_DIR := /worker
 export LOCAL_WORKER_URL := http://worker:8001
 endif
 
+# NO_WORKER=1 (or `make start-lite`): everything but the local worker, for development without the NVIDIA GPU
+# (a laptop on battery). Jobs then wait for a worker ("Wacht op worker"), or run on a remote worker that checks in.
+ifdef NO_WORKER
+export COMPOSE_FILE := docker-compose.yml:docker-compose.no-worker.yml
+export NO_WORKER
+endif
+
 # Only the worker, for a machine that works for the app elsewhere (docker-compose.worker.yml).
 REMOTE_WORKER := $(COMPOSE) -f docker-compose.worker.yml
 
-.PHONY: idle help start start-build test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan user migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-restart worker-token remote-worker remote-worker-stop remote-worker-logs remote-worker-check
+.PHONY: idle help start start-lite start-build restart-services test-db models check stop restart ps logs logs-app logs-queue logs-worker shell artisan user admin-reset migrate test test-filter build worker-test prompt-eval worker-up worker-down worker-stop worker-restart worker-token remote-worker remote-worker-stop remote-worker-logs remote-worker-check
 
 help:
 	@echo "CreatorSMP4 development commands:"
 	@echo "  make start                  Build, start and verify the full stack (test DB, models, GPU)"
+	@echo "  make start-lite             Start everything except the local worker (no GPU, e.g. on battery)"
 	@echo "  make start-build            Alias for make start"
 	@echo "  make check                  Verify services, database, worker and GPU"
 	@echo "  make test-db                Create the test database if it is missing"
 	@echo "  make models                 Download the Whisper and event models into the cache"
 	@echo "  make stop                   Stop and remove containers"
-	@echo "  make restart                Restart all services"
+	@echo "  make restart                Restart all services (without the worker when it is not running)"
 	@echo "  make ps                     Show service status"
 	@echo "  make logs                   Follow all service logs"
 	@echo "  make logs-app               Follow Laravel/Vite logs"
@@ -42,6 +50,7 @@ help:
 	@echo "  make artisan CMD='...'      Run an Artisan command"
 	@echo "  make migrate                Run pending migrations"
 	@echo "  make user                   Create a login account (or set a new password)"
+	@echo "  make admin-reset            Reset the admin login to admin/admin (USERNAME=... PASSWORD=... for others)"
 	@echo "  make test                   Run the Laravel test suite"
 	@echo "  make test-filter FILTER=... Run selected Laravel tests"
 	@echo "  make build                  Build frontend assets"
@@ -57,10 +66,13 @@ help:
 start: idle .env worker-token
 	mkdir -p storage/app/private storage/framework/cache storage/framework/sessions storage/framework/views storage/logs
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
-	@$(MAKE) --no-print-directory worker-up
+	$(if $(NO_WORKER),@$(MAKE) --no-print-directory FORCE=1 worker-stop,@$(MAKE) --no-print-directory worker-up)
 	@$(MAKE) --no-print-directory test-db
-	@$(MAKE) --no-print-directory models
+	$(if $(NO_WORKER),,@$(MAKE) --no-print-directory models)
 	@$(MAKE) --no-print-directory check
+
+start-lite:
+	@$(MAKE) --no-print-directory start NO_WORKER=1
 
 start-build: start
 
@@ -97,10 +109,17 @@ stop: idle
 # `up -d` first: a plain restart keeps the environment the containers were created with, so a changed .env (e.g. the
 # EVENT_* settings) was silently ignored. Then restart the services that hold code in memory, not postgres/redis:
 # restarting everything at once ignores depends_on, and the queue exited when redis was not back yet.
+# After `make start-lite` (no worker container running) this restarts without the worker too.
 restart: idle
+	@if [ -z "$(NO_WORKER)" ] && [ "$$(uname -s)" != Darwin ] && $(COMPOSE) ps -q app | grep -q . && ! $(COMPOSE) ps -q worker | grep -q .; then \
+		echo "The worker is not running: restarting without it (make start starts it again)."; \
+		$(MAKE) --no-print-directory restart-services NO_WORKER=1; \
+	else $(MAKE) --no-print-directory restart-services; fi
+
+restart-services:
 	$(COMPOSE) up -d --wait
 	$(COMPOSE) restart $(filter app queue worker,$(shell $(COMPOSE) config --services))
-	@$(MAKE) --no-print-directory worker-up
+	$(if $(NO_WORKER),,@$(MAKE) --no-print-directory worker-up)
 
 ifeq ($(shell uname -s),Darwin)
 # Installs ffmpeg and the worker venv; reruns only when requirements-mac.txt changes. uv brings its
@@ -120,11 +139,18 @@ worker-down:
 
 worker-restart: worker-up
 
+worker-stop: worker-down
+
 logs-worker:
 	tail -n 100 -f $(WORKER_LOG)
 else
 # The worker is a compose service here, so up/down/restart already cover it.
 worker-up worker-down: ;
+
+# start-lite: a worker container left running by an earlier `make start` would keep the GPU busy. Named explicitly,
+# so compose finds it although its profile is off. idle: stopping it kills a running transcription or analysis.
+worker-stop: idle
+	$(COMPOSE) stop worker
 
 worker-restart: idle
 	$(COMPOSE) up -d --wait worker
@@ -194,6 +220,10 @@ artisan:
 # Interactive (asks for the password without echoing it), so no -T.
 user:
 	$(COMPOSE) exec app php artisan user:create
+
+# Forgotten admin login: back to admin/admin (or USERNAME=/PASSWORD=), and the account is created when missing.
+admin-reset:
+	$(COMPOSE) exec -T app php artisan user:reset-admin $(if $(USERNAME),--username='$(USERNAME)') $(if $(PASSWORD),--password='$(PASSWORD)')
 
 migrate:
 	$(COMPOSE) exec -T app php artisan migrate --force

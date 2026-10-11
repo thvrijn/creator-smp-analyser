@@ -18,6 +18,10 @@ SAMPLE_RATE = 16000
 # pyannote clusters every voice embedding at once by default (memory grows with the square of their number:
 # a 5 h stream has ~25k, gigabytes). It clusters a sample of this many; the rest is assigned to the clusters found.
 MAX_CLUSTER_EMBEDDINGS = int(os.getenv("DIARIZATION_MAX_CLUSTER_EMBEDDINGS", "10000"))
+# A speaker change inside a Whisper segment splits it only when both sides have at least this many words and seconds;
+# shorter runs are diarization jitter around a word ("ja", a laugh) and stay with their neighbours.
+MIN_SPLIT_WORDS = int(os.getenv("DIARIZATION_MIN_SPLIT_WORDS", "3"))
+MIN_SPLIT_SECONDS = float(os.getenv("DIARIZATION_MIN_SPLIT_SECONDS", "1.0"))
 # Rough share of the run per pyannote step, for the progress bar; the embeddings take the longest.
 STEP_WEIGHTS = {"segmentation": (0.0, 0.3), "embeddings": (0.3, 0.95)}
 
@@ -130,6 +134,108 @@ def diarize(pipeline: Any, waveform: np.ndarray, on_progress: Callable[[float], 
     return turns, voices
 
 
+def speaker_numbers(turns: list[tuple[float, float, str]]) -> dict[str, int]:
+    """Pyannote's labels numbered by total speaking time, most first (0 = the streamer, almost always)."""
+    seconds: dict[str, float] = {}
+    for start, end, label in turns:
+        seconds[label] = seconds.get(label, 0.0) + max(0.0, end - start)
+    return {label: number for number, label in enumerate(sorted(seconds, key=lambda label: (-seconds[label], label)))}
+
+
+def _label_at(start: float, end: float, turns: list[tuple[float, float, str]]) -> str | None:
+    """The label speaking most during [start, end] (turns sorted by start)."""
+    overlap: dict[str, float] = {}
+    for turn_start, turn_end, label in turns:
+        if turn_start >= end:
+            break
+        shared = min(turn_end, end) - max(turn_start, start)
+        if shared > 0:
+            overlap[label] = overlap.get(label, 0.0) + shared
+    return max(overlap, key=lambda label: (overlap[label], label)) if overlap else None
+
+
+def split_by_speaker(segments: list[dict[str, Any]], turns: list[tuple[float, float, str]]) -> dict[int, list[dict[str, Any]]]:
+    """Splits Whisper segments in which the speaker changes, at the word where it changes.
+
+    A segment needs `_words` ([(audio start, audio end, word)]), `_audio_start` and file times `start`/`end`. Returns,
+    by segment index, the parts that replace it: {start, end, text, speaker} in file time. Words without a speaker
+    join the run before them; runs shorter than MIN_SPLIT_WORDS/MIN_SPLIT_SECONDS join a neighbour.
+    """
+    numbers = speaker_numbers(turns)
+    ordered_turns = sorted(turns)
+    splits: dict[int, list[dict[str, Any]]] = {}
+    for index, segment in enumerate(segments):
+        words = segment.get("_words") or []
+        if len(words) < 2 * MIN_SPLIT_WORDS:
+            continue
+        runs: list[dict[str, Any]] = []
+        for start, end, word in words:
+            label = _label_at(start, end, ordered_turns) or (runs[-1]["label"] if runs else None)
+            if runs and runs[-1]["label"] == label:
+                runs[-1]["words"].append((start, end, word))
+            else:
+                runs.append({"label": label, "words": [(start, end, word)]})
+        runs = _snap_to_punctuation(_merge_short_runs(runs))
+        if len(runs) < 2:
+            continue
+        offset = float(segment["start"]) - float(segment["_audio_start"])  # audio time -> file time
+        splits[index] = [{
+            "start": round(run["words"][0][0] + offset, 3),
+            "end": round(run["words"][-1][1] + offset, 3),
+            "text": "".join(word for _start, _end, word in run["words"]).strip(),
+            "speaker": numbers.get(run["label"]) if run["label"] is not None else None,
+        } for run in runs]
+    return splits
+
+
+# A speaker change is moved to a punctuation mark at most this many words away: diarization's boundaries are a few
+# tenths of a second off, and people mostly hand over at the end of a sentence or clause.
+SNAP_WORDS = 2
+PUNCTUATION = (".", ",", "?", "!", "…", ";", ":")
+
+
+def _snap_to_punctuation(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for left, right in zip(runs, runs[1:]):
+        words = left["words"] + right["words"]
+        cut = len(left["words"])  # the first word of the right run
+        if words[cut - 1][2].strip().endswith(PUNCTUATION):
+            continue
+        # The nearest word ending in punctuation, at most SNAP_WORDS away, that leaves both runs a word.
+        for distance in range(1, SNAP_WORDS + 1):
+            candidates = [c for c in (cut + distance, cut - distance) if 1 <= c <= len(words) - 1 and words[c - 1][2].strip().endswith(PUNCTUATION)]
+            if candidates:
+                cut = candidates[0]
+                left["words"], right["words"] = words[:cut], words[cut:]
+                break
+    return runs
+
+
+def _merge_short_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def short(run: dict[str, Any]) -> bool:
+        return len(run["words"]) < MIN_SPLIT_WORDS or run["words"][-1][1] - run["words"][0][0] < MIN_SPLIT_SECONDS
+
+    # The shortest run first, into the longer of its neighbours, until every run is long enough.
+    while len(runs) > 1 and any(short(run) for run in runs):
+        index = min((i for i, run in enumerate(runs) if short(run)), key=lambda i: len(runs[i]["words"]))
+        before = runs[index - 1] if index > 0 else None
+        after = runs[index + 1] if index + 1 < len(runs) else None
+        target = before if after is None or (before is not None and len(before["words"]) >= len(after["words"])) else after
+        if target is before:
+            before["words"].extend(runs[index]["words"])
+        else:
+            after["words"][:0] = runs[index]["words"]
+        del runs[index]
+        # Neighbours with the same speaker are one run again.
+        merged: list[dict[str, Any]] = []
+        for run in runs:
+            if merged and merged[-1]["label"] == run["label"]:
+                merged[-1]["words"].extend(run["words"])
+            else:
+                merged.append(run)
+        runs = merged
+    return runs
+
+
 def assign_speakers(
     segment_times: list[tuple[float, float]],
     turns: list[tuple[float, float, str]],
@@ -143,8 +249,8 @@ def assign_speakers(
     seconds: dict[str, float] = {}
     for start, end, label in turns:
         seconds[label] = seconds.get(label, 0.0) + max(0.0, end - start)
-    order = sorted(seconds, key=lambda label: (-seconds[label], label))
-    numbers = {label: number for number, label in enumerate(order)}
+    numbers = speaker_numbers(turns)
+    order = sorted(numbers, key=numbers.get)
 
     ordered_turns = sorted(turns)
     speakers: list[int | None] = []

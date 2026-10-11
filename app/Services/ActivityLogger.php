@@ -26,6 +26,7 @@ class ActivityLogger
         'streams.download-audio' => 'Audio ophalen gestart',
         'streams.extract-events' => 'Analyse gestart',
         'streams.cancel' => 'Job geannuleerd',
+        'dashboard.queue' => 'Stap gestart voor alle streams die klaarstaan',
         'streams.speakers.update' => 'Spreker benoemd',
         'streams.speakers.merge' => 'Sprekers samengevoegd',
         'segments.speaker' => 'Spreker van een zin aangepast',

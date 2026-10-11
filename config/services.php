@@ -48,6 +48,8 @@ return [
         'category' => env('TWITCH_CATEGORY', 'CreatorSMP'),
         'server_opens_hour' => (int) env('SMP_SERVER_OPENS_HOUR', 14),
         'server_closes_hour' => (int) env('SMP_SERVER_CLOSES_HOUR', 24), // 24 = midnight
+        // How many days Twitch keeps a channel's past broadcasts, by broadcaster type (VodRetention).
+        'vod_retention_days' => ['partner' => 60, 'affiliate' => 14, 'none' => 7],
         'server_timezone' => 'Europe/Amsterdam',
         // yt-dlp format for the analysis download: Twitch's audio-only rendition, else the smallest video rendition (it has audio too).
         'audio_format' => env('TWITCH_AUDIO_FORMAT', 'ba/worst'),

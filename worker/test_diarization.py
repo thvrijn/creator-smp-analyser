@@ -58,6 +58,48 @@ class DiarizationTest(unittest.TestCase):
         hook("embeddings", None, total=4, completed=4)
         self.assertEqual(seen, [0.15, 0.95])
 
+    @staticmethod
+    def segment(words: list[str], start: float = 0.0) -> dict:
+        """A segment of one word per 0.5 s from `start` (audio time = file time + 100)."""
+        timed = [(start + 100 + i * 0.5, start + 100 + i * 0.5 + 0.4, " " + word) for i, word in enumerate(words)]
+        return {"start": start, "end": start + len(words) * 0.5, "_audio_start": start + 100, "_words": timed}
+
+    def test_a_segment_is_split_where_the_speaker_changes(self) -> None:
+        segment = self.segment(["Ga", "jij", "mee", "naar", "de", "muur?", "Nee", "ik", "blijf", "hier."])
+        turns = [(100.0, 102.95, "A"), (103.0, 106.0, "B"), (200.0, 300.0, "A")]
+
+        splits = diarization.split_by_speaker([segment], turns)
+
+        self.assertEqual(splits, {0: [
+            {"start": 0.0, "end": 2.9, "text": "Ga jij mee naar de muur?", "speaker": 0},
+            {"start": 3.0, "end": 4.9, "text": "Nee ik blijf hier.", "speaker": 1},
+        ]})
+
+    def test_a_short_burst_of_another_voice_does_not_split_a_segment(self) -> None:
+        # "ja" from someone else (or diarization jitter) in the middle of the streamer's sentence.
+        segment = self.segment(["We", "moeten", "nu", "ja", "echt", "naar", "binnen", "gaan."])
+        turns = [(100.0, 101.45, "A"), (101.5, 101.9, "B"), (101.95, 104.0, "A"), (200.0, 300.0, "B")]
+
+        self.assertEqual(diarization.split_by_speaker([segment], turns), {})
+
+    def test_a_speaker_change_moves_to_a_nearby_punctuation_mark(self) -> None:
+        # Diarization hears B start at "zelf"; the sentence before ends a word earlier, at "eens."
+        segment = self.segment(["Kijk", "eens.", "Helemaal", "zelf", "gebakken", "enzo.", "Wauw,", "lekker", "zeg,", "echt", "bedankt."])
+        turns = [(100.0, 101.45, "A"), (101.5, 103.45, "B"), (103.5, 106.0, "A"), (200.0, 300.0, "B")]
+
+        parts = diarization.split_by_speaker([segment], turns)[0]
+
+        self.assertEqual([(part["text"], part["speaker"]) for part in parts], [
+            ("Kijk eens.", 1),
+            ("Helemaal zelf gebakken enzo. Wauw,", 0),
+            ("lekker zeg, echt bedankt.", 1),
+        ])
+
+    def test_a_segment_without_word_times_is_not_split(self) -> None:
+        segment = {"start": 0.0, "end": 5.0, "_audio_start": 100.0, "_words": []}
+
+        self.assertEqual(diarization.split_by_speaker([segment], [(100.0, 102.0, "A"), (102.0, 105.0, "B")]), {})
+
 
 if __name__ == "__main__":
     unittest.main()

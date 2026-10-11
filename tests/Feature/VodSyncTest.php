@@ -60,7 +60,7 @@ class VodSyncTest extends TestCase
             $this->video('2001', '2026-10-04T16:54:44Z', '5h16m37s'),
             $this->video('1999', '2026-09-23T17:44:50Z', '2h38m15s', 'Training'), // before the season: skipped
             $this->video('2002', '2026-10-05T07:00:00Z', '3h0m0s', 'Ochtendstream'), // 09:00-12:00, server closed: skipped
-        ]], [['id' => '11', 'login' => 'royalistiq']]);
+        ]], [['id' => '11', 'login' => 'royalistiq', 'broadcaster_type' => 'affiliate']]);
 
         $this->from('/players/'.$player->id)->post('/players/'.$player->id.'/sync-vods')
             ->assertRedirect('/players/'.$player->id)->assertSessionHas('success', '1 nieuwe VOD toegevoegd.');
@@ -72,6 +72,7 @@ class VodSyncTest extends TestCase
         $this->assertSame('2026-10-04 16:54:44', $stream->started_at->toDateTimeString());
         $this->assertSame('2026-10-04 22:11:21', $stream->ended_at->toDateTimeString());
         $this->assertNotNull($player->fresh()->vods_synced_at);
+        $this->assertSame('affiliate', $player->fresh()->twitch_broadcaster_type); // sets how long Twitch keeps the VODs
 
         // A re-sync keeps a title changed in the app and updates the length of a VOD that was still live.
         $stream->update(['title' => 'Eigen titel']);

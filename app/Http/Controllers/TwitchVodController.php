@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\DownloadVodJob;
 use App\Models\Player;
 use App\Models\Stream;
+use App\Services\StreamPipeline;
 use App\Services\TwitchVodSync;
 use Illuminate\Http\Client\HttpClientException;
 use Illuminate\Http\RedirectResponse;
@@ -23,26 +23,11 @@ class TwitchVodController extends Controller
         return $this->sync($sync, Player::query()->whereNotNull('twitch_login')->get());
     }
 
-    public function download(Stream $stream): RedirectResponse
+    public function download(Stream $stream, StreamPipeline $pipeline): RedirectResponse
     {
-        $back = back(fallback: route('streams.index'));
-        if ($stream->twitch_video_id === null) {
-            return $back->with('error', 'Deze stream is geen Twitch-VOD.');
-        }
-        if ($stream->ended_at === null) {
-            return $back->with('error', "Deze stream is nog live. Haal de audio op als hij voorbij is, en sync de VOD's dan eerst opnieuw.");
-        }
-        if ($stream->video_path !== null) {
-            return $back->with('error', 'Deze stream heeft al audio of video.');
-        }
-        if (in_array($stream->video_download_status, ['queued', 'processing'], true) && ! $stream->isStalled('video_download_status')) {
-            return $back->with('error', 'De audio wordt al opgehaald.');
-        }
+        $error = $pipeline->download($stream);
 
-        $stream->forceFill(['video_download_status' => 'queued', 'video_download_progress' => 0, 'video_download_error' => null])->save();
-        DownloadVodJob::dispatch($stream->id);
-
-        return $back->with('success', 'De audio wordt opgehaald. Daarna kun je transcriberen.');
+        return back(fallback: route('streams.index'))->with($error === null ? 'success' : 'error', $error ?? 'De audio wordt opgehaald. Daarna kun je transcriberen.');
     }
 
     /** @param  Collection<int, Player>  $players */

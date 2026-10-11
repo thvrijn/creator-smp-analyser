@@ -2,17 +2,24 @@
 
 namespace App\Services;
 
+use App\Models\Player;
 use App\Models\Stream;
+use App\Models\StreamSpeaker;
 use App\Models\Worker;
+use Illuminate\Support\Collection;
 use RuntimeException;
 
 class TranscriptionWorker
 {
+    /** At most this many other players' names are given to Whisper as hotwords (its prompt holds ~220 tokens). */
+    private const HOTWORD_PLAYERS = 20;
+
     private int $segmentIndex = 0;
 
-    public function __construct(private readonly WorkerPool $pool)
-    {
-    }
+    /** @var array<int, list<array{start_time: string, end_time: string, text: string, speaker: int|null}>> segment index => the parts replacing it */
+    private array $splits = [];
+
+    public function __construct(private readonly WorkerPool $pool) {}
 
     /**
      * Segments get the speaker from the worker's `speakers` event (null without diarization); $onEvent sees that event too.
@@ -33,6 +40,7 @@ class TranscriptionWorker
                     'video_size' => $stream->video_file_size,
                     // Only these parts, e.g. the Creator SMP part of a Twitch VOD; segment times stay file times.
                     ...($stream->transcription_ranges !== null ? ['ranges' => $stream->transcription_ranges] : []),
+                    'hotwords' => $this->hotwords($stream),
                 ]);
         } catch (\Throwable $exception) {
             $this->pool->markUnreachable($worker);
@@ -44,6 +52,7 @@ class TranscriptionWorker
         }
 
         $this->segmentIndex = 0;
+        $this->splits = [];
         // Keyed by the worker's segment index, so the `speakers` event lines up even when a segment is dropped here.
         $segments = [];
         $body = $response->toPsrResponse()->getBody();
@@ -83,7 +92,37 @@ class TranscriptionWorker
             throw new RuntimeException('De transcriptie leverde geen tekst op.');
         }
 
-        return array_values($segments);
+        // A segment where the speaker changed halfway is replaced by its parts, in place.
+        return collect($segments)->flatMap(fn (array $segment, int $index) => $this->splits[$index] ?? [$segment])->values()->all();
+    }
+
+    /**
+     * Names Whisper does not know, so it spells them as they are: the streamer, the players the streamer dealt with in
+     * earlier streams (their storylines and the speakers named after them), and the season's own words.
+     *
+     * As one Dutch sentence: Whisper copies the style of its prompt, and a bare list of names made it write without any
+     * full stops and drop 6% of the words (measured on 10 min of stream 8); a sentence kept the punctuation.
+     */
+    public function hotwords(Stream $stream): string
+    {
+        $earlier = Stream::query()->where('player_id', $stream->player_id)->whereKeyNot($stream->id)->latest('started_at')->limit(10);
+        $storyNames = $earlier->clone()->pluck('story_players')->flatten();
+        $speakerNames = Player::query()->whereIn('id', StreamSpeaker::query()->whereIn('stream_id', $earlier->clone()->select('id'))->whereNotNull('player_id')->select('player_id'))->pluck('name');
+        $others = $storyNames->merge($speakerNames)->filter()->countBy()->sortDesc()->keys()
+            ->reject(fn (string $name) => $name === $stream->player->name)
+            ->take(self::HOTWORD_PLAYERS);
+
+        $sentence = 'In deze Nederlandse Minecraft-stream van '.$stream->player->name.' gaat het over '.$this->dutchList(collect(config('season.hotwords')));
+
+        return $sentence.($others->isEmpty() ? '' : ', met '.$this->dutchList($others)).'.';
+    }
+
+    /** "A, B en C" */
+    private function dutchList(Collection $items): string
+    {
+        $items = $items->values();
+
+        return $items->count() < 2 ? (string) $items->first() : $items->slice(0, -1)->implode(', ').' en '.$items->last();
     }
 
     /**
@@ -102,6 +141,7 @@ class TranscriptionWorker
                     }
                 }
             }
+
             return;
         }
 
@@ -121,6 +161,12 @@ class TranscriptionWorker
             foreach ($event['segment_speakers'] as $index => $speaker) {
                 if (isset($segments[$index])) {
                     $segments[$index]['speaker'] = is_int($speaker) && $speaker >= 0 ? $speaker : null;
+                }
+            }
+            foreach (is_array($event['segment_splits'] ?? null) ? $event['segment_splits'] : [] as $index => $parts) {
+                $parts = is_array($parts) ? array_values(array_filter(array_map(fn ($part) => is_array($part) ? $this->normaliseSegment($part) : null, $parts))) : [];
+                if (isset($segments[(int) $index]) && count($parts) > 1) {
+                    $this->splits[(int) $index] = $parts;
                 }
             }
         }

@@ -11,6 +11,8 @@ class DatabaseSeeder extends Seeder
     {
         $this->call(AdminUserSeeder::class);
         $this->call(CreatorSmpPlayerSeeder::class);
+        $this->call(CreatorSmpTeamSeeder::class);
+        $this->call(CreatorSmpDeathSeeder::class);
 
         foreach (['Sophie', 'Lars', 'Mark'] as $name) {
             Player::firstOrCreate(['name' => $name]);

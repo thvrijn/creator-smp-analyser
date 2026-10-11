@@ -1,0 +1,12 @@
+# Leaves the worker out of Docker, selected by the Makefile: on macOS (Docker has no GPU there, so the
+# worker runs natively through scripts/worker-mac.sh and checks in like any other worker) and with
+# NO_WORKER=1 (`make start-lite`: development without the NVIDIA GPU, e.g. a laptop on battery).
+services:
+  worker:
+    profiles: [nvidia]
+  queue:
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

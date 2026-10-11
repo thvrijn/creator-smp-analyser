@@ -5,9 +5,15 @@ namespace App\Http\Controllers;
 use App\Http\Requests\StorePlayerRequest;
 use App\Http\Requests\UpdatePlayerRequest;
 use App\Http\Resources\StreamResource;
+use App\Models\Event;
 use App\Models\Player;
+use App\Models\PlayerDeath;
 use App\Models\Stream;
+use App\Services\SharedMoments;
+use App\Services\VodRetention;
+use App\Services\VoiceProfiles;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -17,49 +23,46 @@ class PlayerController extends Controller
 {
     public function index(): Response
     {
-        $players = Player::query()
-            ->withCount('streams')
-            ->orderByName()
-            ->get()
-            ->map(fn (Player $player) => [
-                'id' => $player->id,
-                'name' => $player->name,
-                'photo_url' => $player->photoUrl(),
-                'twitch_login' => $player->twitch_login,
-                'streams_count' => $player->streams_count,
-                'created_at' => $player->created_at?->toIso8601String(),
-            ]);
-
         return Inertia::render('Players/Index', [
-            'players' => $players,
-        ]);
-    }
-
-    public function dashboard(): Response
-    {
-        $active = Stream::query()->active()
-            ->with(['player:id,name,photo_path,twitch_login,updated_at', 'activeWorker:id,name,current_stream_id'])
-            ->withCount('transcriptSegments')
-            ->get()
-            // Running first, then waiting for a worker, then the queue; the longest-running first within each.
-            ->sortBy(fn (Stream $stream) => [$this->activityRank($stream), $stream->updated_at?->timestamp])
-            ->values();
-
-        return Inertia::render('Dashboard', [
             'players' => Player::query()->withStreamStats()->orderByName()->get()->map->statsPayload()->values(),
-            // What is being downloaded, transcribed or analysed right now; the page polls this prop.
-            'active_streams' => StreamResource::collection($active)->resolve(),
         ]);
     }
 
-    public function show(Player $player): Response
+    public function show(Player $player, SharedMoments $moments, VodRetention $retention, VoiceProfiles $voices): Response
     {
-        $player = Player::query()->withStreamStats()->findOrFail($player->id);
-        $streams = $player->streams()->with(['player:id,name,photo_path,twitch_login,updated_at', 'activeWorker:id,name,current_stream_id'])->withCount('transcriptSegments')->latest('started_at')->get();
+        $player = Player::query()->withStreamStats()->withCount('clips')->findOrFail($player->id);
+        $streams = $player->streams()
+            ->with(['player:id,name,photo_path,twitch_login,twitch_broadcaster_type,updated_at', 'activeWorker:id,name,current_stream_id', 'events' => fn ($events) => $events->orderByDesc('confidence')->orderBy('start_time')])
+            ->withCount(['transcriptSegments', 'events'])
+            ->latest('started_at')
+            ->get();
+
+        // Per analysed stream the players met in it (SharedMoments: their voice or name in the same moment).
+        $met = $streams->where('event_extraction_status', 'completed')
+            ->mapWithKeys(fn (Stream $stream) => [$stream->id => collect($moments->forStream($stream))->map(fn (array $links) => collect($links)->pluck('player')->unique('id'))]);
 
         return Inertia::render('Players/Show', [
-            'player' => $player->statsPayload(),
+            'player' => [
+                ...$player->statsPayload(),
+                'clips_count' => (int) $player->clips_count,
+                'retention_days' => config('services.twitch.vod_retention_days')[$player->twitch_broadcaster_type] ?? null,
+                'deaths' => $player->deaths->map(fn (PlayerDeath $death) => ['id' => $death->id, 'died_at' => $death->died_at->toIso8601String(), 'message' => $death->message])->values(),
+                'voice_streams' => $voices->profiles()[$player->id]['streams'] ?? 0,
+            ],
             'streams' => StreamResource::collection($streams)->resolve(),
+            // The story of each stream, by stream id: its storyline paragraphs, most confident events and the players met.
+            'chapters' => $streams->mapWithKeys(fn (Stream $stream) => [$stream->id => [
+                'paragraphs' => $stream->story_summary ? array_values(array_filter(array_map('trim', preg_split('/\n\s*\n/', trim($stream->story_summary))))) : [],
+                'events_count' => $stream->events_count,
+                'events' => $stream->events->take(5)->sortBy('start_time')->map(fn (Event $event) => ['id' => $event->id, 'type' => $event->type, 'title' => $event->title])->values(),
+                'met' => ($met[$stream->id] ?? collect())->flatten(1)->unique('id')->values(),
+                'vod_expires_at' => $retention->expiresAt($stream)?->toIso8601String(),
+            ]]),
+            // Who this player shared the most moments with, over all their analysed streams.
+            'met' => $met->flatMap(fn (Collection $perEvent, int $streamId) => $perEvent->flatten(1)->map(fn (array $other) => [...$other, 'stream_id' => $streamId]))
+                ->groupBy('id')
+                ->map(fn (Collection $shared) => [...collect($shared->first())->except('stream_id')->all(), 'moments' => $shared->count(), 'streams' => $shared->pluck('stream_id')->unique()->count()])
+                ->sortByDesc('moments')->take(12)->values(),
             'players' => Player::query()->orderByName()->get(['id', 'name']),
         ]);
     }
@@ -117,16 +120,5 @@ class PlayerController extends Controller
         }
 
         return redirect()->route('players.index')->with('success', 'Speler verwijderd.');
-    }
-
-    private function activityRank(Stream $stream): int
-    {
-        $statuses = [$stream->transcription_status, $stream->event_extraction_status, $stream->video_download_status];
-
-        return match (true) {
-            in_array('processing', $statuses, true) => 0,
-            in_array('waiting', $statuses, true) => 1,
-            default => 2,
-        };
     }
 }

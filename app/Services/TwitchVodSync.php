@@ -20,6 +20,9 @@ class TwitchVodSync
 {
     private const API = 'https://api.twitch.tv/helix/';
 
+    /** @var array<string, string> lowercase login => broadcaster type (partner, affiliate or none), from the last userIds() */
+    private array $broadcasterTypes = [];
+
     /**
      * @param  Collection<int, Player>  $players
      * @return array{new: int, failed: list<string>} the number of new streams, and the players whose channel could not be synced
@@ -68,7 +71,8 @@ class TwitchVodSync
                     'source' => 'twitch',
                 ])->save();
             }
-            $player->update(['vods_synced_at' => now()]);
+            // The broadcaster type sets how long Twitch keeps the VODs (VodRetention).
+            $player->update(['vods_synced_at' => now(), 'twitch_broadcaster_type' => $this->broadcasterTypes[strtolower($player->twitch_login)] ?? $player->twitch_broadcaster_type]);
         }
 
         return ['new' => $new, 'failed' => $failed];
@@ -90,6 +94,7 @@ class TwitchVodSync
             }
             foreach ($response->throw()->json('data') as $user) {
                 $ids[strtolower($user['login'])] = $user['id'];
+                $this->broadcasterTypes[strtolower($user['login'])] = ($user['broadcaster_type'] ?? '') ?: 'none';
             }
         }
 

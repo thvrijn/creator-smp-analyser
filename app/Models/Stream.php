@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Collection;
 
 class Stream extends Model
 {
@@ -116,6 +117,33 @@ class Stream extends Model
             ->whereIn('transcription_status', self::ACTIVE_STATUSES)
             ->orWhereIn('event_extraction_status', self::ACTIVE_STATUSES)
             ->orWhereIn('video_download_status', self::ACTIVE_STATUSES));
+    }
+
+    /**
+     * The active streams as shown to the user (dashboard, sidebar): running first, then waiting for a worker, then the
+     * queue; the longest-running first within each.
+     *
+     * @return Collection<int, self>
+     */
+    public static function activeList(): Collection
+    {
+        return self::query()->active()
+            ->with(['player:id,name,photo_path,twitch_login,updated_at', 'activeWorker:id,name,current_stream_id'])
+            ->withCount('transcriptSegments')
+            ->get()
+            ->sortBy(fn (self $stream) => [$stream->activityRank(), $stream->updated_at?->timestamp])
+            ->values();
+    }
+
+    private function activityRank(): int
+    {
+        $statuses = [$this->transcription_status, $this->event_extraction_status, $this->video_download_status];
+
+        return match (true) {
+            in_array('processing', $statuses, true) => 0,
+            in_array('waiting', $statuses, true) => 1,
+            default => 2,
+        };
     }
 
     /**

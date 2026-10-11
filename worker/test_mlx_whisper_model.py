@@ -53,7 +53,7 @@ class MlxWhisperModelTest(unittest.TestCase):
         self.assertEqual([(12.0, 15.5, " Hoi"), (18.0, 20.0, " tot het eind"), (42.0, 44.0, " daar")], [(s.start, s.end, s.text) for s in segments])
         audio = self.mlx_transcribe.call_args.args[0]
         self.assertEqual(20 * RATE, len(audio))
-        self.assertEqual({"path_or_hf_repo": "repo", "language": "nl", "verbose": None}, self.mlx_transcribe.call_args.kwargs)
+        self.assertEqual({"path_or_hf_repo": "repo", "language": "nl", "verbose": None, "word_timestamps": False}, self.mlx_transcribe.call_args.kwargs)
 
     def test_without_speech_nothing_is_transcribed(self) -> None:
         with patch.object(mlx_whisper_model, "get_speech_timestamps", return_value=[]):

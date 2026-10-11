@@ -282,6 +282,46 @@ class TranscriptionJobTest extends TestCase
         ], $stream->refresh()->transcription_speakers);
     }
 
+    public function test_a_segment_split_between_speakers_is_replaced_by_its_parts(): void
+    {
+        Storage::fake('local');
+        $stream = $this->createStream('streams/1/video/stream.mp4');
+        Storage::disk('local')->put($stream->video_path, 'video');
+        $body = implode("\n", [
+            json_encode(['type' => 'segment', 'start' => 1, 'end' => 2, 'text' => 'Hoi Sam']),
+            json_encode(['type' => 'segment', 'start' => 3, 'end' => 7, 'text' => 'Ga je mee? Nee, ik blijf hier.']),
+            json_encode(['type' => 'segment', 'start' => 8, 'end' => 9, 'text' => 'Oké']),
+            json_encode(['type' => 'speakers', 'segment_speakers' => [0, 0, 0], 'speakers' => [], 'segment_splits' => ['1' => [
+                ['start' => 3, 'end' => 4.5, 'text' => 'Ga je mee?', 'speaker' => 0],
+                ['start' => 4.6, 'end' => 7, 'text' => 'Nee, ik blijf hier.', 'speaker' => 1],
+            ]]]),
+            json_encode(['type' => 'completed', 'stage' => 'completed', 'progress' => 100, 'segment_count' => 3]),
+            '',
+        ]);
+        Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/x-ndjson'])]);
+
+        $this->markQueued($stream, 'transcription');
+        (new TranscribeStreamJob($stream->id))->handle(app(\App\Services\TranscriptionWorker::class), app(\App\Services\WorkerPool::class), app(\App\Services\StreamJobCanceller::class));
+
+        $this->assertSame(
+            [['Hoi Sam', 0], ['Ga je mee?', 0], ['Nee, ik blijf hier.', 1], ['Oké', 0]],
+            $stream->transcriptSegments()->orderBy('start_time')->get()->map(fn ($segment) => [$segment->text, $segment->speaker])->all(),
+        );
+    }
+
+    public function test_whisper_gets_the_streamer_and_the_players_of_earlier_streams_as_hotwords(): void
+    {
+        $stream = $this->createStream('streams/1/video/stream.mp4');
+        $morrog = Player::create(['name' => 'Morrog']);
+        $earlier = Stream::query()->forceCreate(['player_id' => $stream->player_id, 'title' => 'Dag 1', 'started_at' => '2026-10-02 10:00:00+00', 'source' => 'twitch', 'story_players' => ['Egbertlive', 'Morrog']]);
+        $earlier->speakerNames()->create(['speaker' => 1, 'player_id' => $morrog->id]);
+
+        $this->assertSame(
+            'In deze Nederlandse Minecraft-stream van Sophie gaat het over CreatorSMP en Verliezersrealm, met Morrog en Egbertlive.',
+            app(\App\Services\TranscriptionWorker::class)->hotwords($stream->fresh()),
+        );
+    }
+
     public function test_a_transcript_without_diarization_has_no_speakers(): void
     {
         Storage::fake('local');
