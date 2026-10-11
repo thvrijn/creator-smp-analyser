@@ -206,7 +206,11 @@ def whisper_segments(model: Any, audio_file: Path, hotwords: str | None = None) 
     """Whisper over one chunk: speech only (VAD), with word times (for splitting by speaker), batched on a GPU."""
     options: dict[str, Any] = {"language": LANGUAGE, "vad_filter": True, "word_timestamps": True}
     if isinstance(model, MlxWhisperModel):
-        # mlx-whisper has no hotwords; an initial prompt would make it repeat the names in quiet parts.
+        # mlx-whisper (a port of OpenAI's Whisper) has no hotwords, only an initial prompt: it starts each chunk's
+        # "previous text" and slides out after ~220 tokens of speech, so it helps the first minutes of every chunk.
+        # A name spelled right there tends to stay right, as it is then in the previous text.
+        if hotwords:
+            options["initial_prompt"] = hotwords
         return model.transcribe(str(audio_file), **options)[0]
     if hotwords:
         options["hotwords"] = hotwords

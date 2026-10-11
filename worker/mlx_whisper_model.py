@@ -25,7 +25,10 @@ class MlxWhisperModel:
         # mlx-whisper keeps its model in this class-level cache; transcribe() below finds it there (fp16, its default).
         ModelHolder.get_model(repo, mx.float16)
 
-    def transcribe(self, audio_path: str, language: str | None = None, vad_filter: bool = False, word_timestamps: bool = False, **_kwargs: Any) -> tuple[list[Any], None]:
+    def transcribe(
+        self, audio_path: str, language: str | None = None, vad_filter: bool = False, word_timestamps: bool = False,
+        initial_prompt: str | None = None, **_kwargs: Any,
+    ) -> tuple[list[Any], None]:
         import mlx_whisper
 
         audio = decode_audio(audio_path, sampling_rate=SAMPLING_RATE)
@@ -39,7 +42,10 @@ class MlxWhisperModel:
             audio = np.concatenate(parts)
             timestamps = SpeechTimestampsMap(speech, SAMPLING_RATE)
         # Greedy decoding: mlx-whisper has no beam search. verbose=None prints nothing.
-        result = mlx_whisper.transcribe(audio, path_or_hf_repo=self.repo, language=language, verbose=None, word_timestamps=word_timestamps)
+        options: dict[str, Any] = {"word_timestamps": word_timestamps}
+        if initial_prompt:
+            options["initial_prompt"] = initial_prompt
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=self.repo, language=language, verbose=None, **options)
 
         def original(start: float, end: float) -> tuple[float, float]:
             if timestamps is None:

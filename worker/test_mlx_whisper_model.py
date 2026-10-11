@@ -55,6 +55,19 @@ class MlxWhisperModelTest(unittest.TestCase):
         self.assertEqual(20 * RATE, len(audio))
         self.assertEqual({"path_or_hf_repo": "repo", "language": "nl", "verbose": None, "word_timestamps": False}, self.mlx_transcribe.call_args.kwargs)
 
+    def test_an_initial_prompt_is_passed_on(self) -> None:
+        MlxWhisperModel("repo").transcribe("chunk.wav", language="nl", initial_prompt="In deze stream van Morrog.")
+
+        self.assertEqual("In deze stream van Morrog.", self.mlx_transcribe.call_args.kwargs["initial_prompt"])
+
+    def test_the_hotwords_reach_mlx_whisper_as_its_initial_prompt(self) -> None:
+        model = MlxWhisperModel("repo")
+        with patch.object(model, "transcribe", return_value=([], None)) as transcribe:
+            entrypoint.whisper_segments(model, "chunk.wav", "In deze stream van Morrog.")
+
+        self.assertEqual("In deze stream van Morrog.", transcribe.call_args.kwargs["initial_prompt"])
+        self.assertNotIn("hotwords", transcribe.call_args.kwargs)
+
     def test_without_speech_nothing_is_transcribed(self) -> None:
         with patch.object(mlx_whisper_model, "get_speech_timestamps", return_value=[]):
             segments, _info = MlxWhisperModel("repo").transcribe("chunk.wav", language="nl", vad_filter=True)
