@@ -1,8 +1,9 @@
 """Compares Whisper with and without the hotwords sentence on a piece of real audio, on this worker's own backend.
 
-On the Mac that is mlx-whisper, which gets the sentence as its initial prompt; in Docker faster-whisper's hotwords.
-It prints per run the time, the lines, the words, the punctuation, how often each name is spelled right, and the
-longest run of identical lines (greedy decoding on the Mac can loop). Run it on the worker's own Python:
+On the Mac that is mlx-whisper, which gets the sentence as its initial prompt (switched on here, whatever
+WHISPER_MLX_INITIAL_PROMPT says); in Docker faster-whisper's hotwords. It prints per run the time, the lines, the
+words, the punctuation, how often each name is spelled right, the longest run of identical lines (greedy decoding on
+the Mac can loop) and how often the prompt itself ended up in the transcript ("echo"). Run it on the worker's Python:
 
     worker/.venv/bin/python worker/hotwords_eval.py stream8.m4a --start 13800 --length 600     # Mac
     docker compose exec -T worker python3 /worker/hotwords_eval.py /var/www/html/storage/app/private/streams/8/video/<file> --start 13800 --length 600
@@ -40,6 +41,9 @@ def main() -> None:
     parser.add_argument("--names", default=DEFAULT_NAMES, help="comma-separated names to count")
     args = parser.parse_args()
     names = [name.strip() for name in args.names.split(",") if name.strip()]
+    entrypoint.MLX_INITIAL_PROMPT = True
+    # The prompt written into the transcript: its opening words, which nobody says in a stream.
+    echo = " ".join(args.sentence.split()[:4])
 
     with tempfile.TemporaryDirectory() as directory:
         wav = Path(directory) / "sample.wav"
@@ -56,7 +60,7 @@ def main() -> None:
             print(
                 f"{label:14} {elapsed:5.0f} s  lines {len(lines):4}  words {len(text.split()):5}  "
                 f". {text.count('.'):4}  ? {text.count('?'):3}  , {text.count(','):4}  "
-                f"longest repeat {longest_repeat(lines):2}  | {spelled}",
+                f"longest repeat {longest_repeat(lines):2}  echo {text.count(echo)}  | {spelled}",
                 flush=True,
             )
         entrypoint.unload_whisper_model(model)

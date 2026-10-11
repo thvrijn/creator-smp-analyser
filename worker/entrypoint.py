@@ -37,6 +37,10 @@ WHISPER_CHUNK_OVERLAP_SECONDS = max(0.0, float(os.getenv("WHISPER_CHUNK_OVERLAP_
 # 30 s piece in one pass, and when Whisper stops early the rest is lost: 5% fewer words, and a 28 s stretch of a
 # conversation was gone. Batch 16 was no faster; 15 s pieces lost less but were no faster than one at a time.
 WHISPER_BATCH_SIZE = max(0, int(os.getenv("WHISPER_BATCH_SIZE", "0") or 0))
+# The Mac (mlx-whisper) has no hotwords; with this on it gets the hotwords sentence as its initial prompt instead. Off
+# until measured on the Mac (worker/hotwords_eval.py): an initial prompt only helps each chunk's first minutes, and
+# Whisper can write the prompt itself into the transcript over music, which greedy decoding is more prone to.
+MLX_INITIAL_PROMPT = os.getenv("WHISPER_MLX_INITIAL_PROMPT", "0").lower() in ("1", "true", "yes")
 # Whisper's well-known Dutch hallucinations over music or silence: subtitle credits from its training data.
 HALLUCINATION_PATTERN = re.compile(r"amara\.org|ondertitel(?:d|ing) door|nederlandse ondertiteling|tv gelderland", re.IGNORECASE)
 # Batched decoding returns one segment per speech piece (up to 30 s, often many sentences). A segment longer than this
@@ -208,8 +212,8 @@ def whisper_segments(model: Any, audio_file: Path, hotwords: str | None = None) 
     if isinstance(model, MlxWhisperModel):
         # mlx-whisper (a port of OpenAI's Whisper) has no hotwords, only an initial prompt: it starts each chunk's
         # "previous text" and slides out after ~220 tokens of speech, so it helps the first minutes of every chunk.
-        # A name spelled right there tends to stay right, as it is then in the previous text.
-        if hotwords:
+        # Off by default (MLX_INITIAL_PROMPT).
+        if hotwords and MLX_INITIAL_PROMPT:
             options["initial_prompt"] = hotwords
         return model.transcribe(str(audio_file), **options)[0]
     if hotwords:

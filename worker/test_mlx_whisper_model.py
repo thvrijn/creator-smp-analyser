@@ -60,10 +60,13 @@ class MlxWhisperModelTest(unittest.TestCase):
 
         self.assertEqual("In deze stream van Morrog.", self.mlx_transcribe.call_args.kwargs["initial_prompt"])
 
-    def test_the_hotwords_reach_mlx_whisper_as_its_initial_prompt(self) -> None:
+    def test_the_hotwords_reach_mlx_whisper_only_when_the_initial_prompt_is_switched_on(self) -> None:
         model = MlxWhisperModel("repo")
         with patch.object(model, "transcribe", return_value=([], None)) as transcribe:
             entrypoint.whisper_segments(model, "chunk.wav", "In deze stream van Morrog.")
+            self.assertNotIn("initial_prompt", transcribe.call_args.kwargs)
+            with patch.object(entrypoint, "MLX_INITIAL_PROMPT", True):
+                entrypoint.whisper_segments(model, "chunk.wav", "In deze stream van Morrog.")
 
         self.assertEqual("In deze stream van Morrog.", transcribe.call_args.kwargs["initial_prompt"])
         self.assertNotIn("hotwords", transcribe.call_args.kwargs)

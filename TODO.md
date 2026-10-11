@@ -55,7 +55,7 @@ Vink af met `[x]`. Afgeronde punten mogen naar **Klaar** onderaan.
 
 - [ ] pyannote 4 (`speaker-diarization-community-1`): getest op 20 min van stream 8 (toegang werkt nu). Even snel, iets minder RAM, 3 sprekers waar 3.1 er 5 vond; uit de tekst alleen geen duidelijke winnaar. Alleen overstappen na luisteren naar de regels waar ze het oneens zijn. Kost een torch 2.8-rebuild en nieuwe stemembeddings (alles opnieuw transcriberen).
 
-- [ ] Op de MacBook meten of de namenzin als `initial_prompt` helpt zonder de interpunctie te slopen of greedy decoding vaker in een lus te laten raken: `worker/.venv/bin/python worker/hotwords_eval.py <audio van stream 8> --start 13800 --length 600` (audio via /streams/8/audio). Helpt het niet, dan de prompt op MLX weer weglaten.
+- [ ] Op de MacBook meten of de namenzin als `initial_prompt` helpt zonder de interpunctie te slopen of greedy decoding vaker in een lus te laten raken, en zonder dat de prompt zelf in het transcript belandt: `worker/.venv/bin/python worker/hotwords_eval.py <audio van stream 8> --start 13800 --length 600` (audio via /streams/8/audio). Staat nu uit (`WHISPER_MLX_INITIAL_PROMPT`); aanzetten in `worker/.env` als de namen beter worden, de punten blijven, "longest repeat" niet stijgt en "echo" 0 is.
 
 ## Technisch
 
