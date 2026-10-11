@@ -4,5 +4,8 @@ av<18
 mlx-lm>=0.32,<1
 # Whisper on Metal; faster-whisper (CPU) stays for its VAD and as the fallback (WHISPER_DEVICE=cpu).
 mlx-whisper>=0.4,<0.5
-# Speaker diarization (CPU on macOS); same version as in Docker.
+# Speaker diarization (on the GPU through MPS); same versions as in Docker. pyannote 3.4 needs torchaudio<2.9
+# (torchaudio.AudioMetaData); unpinned, uv installed torch 2.14 and pyannote no longer imported.
+torch==2.7.1
+torchaudio==2.7.1
 pyannote.audio==3.4.0

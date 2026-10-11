@@ -13,6 +13,8 @@ def release_gpu_memory() -> None:
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():  # pyannote on the Mac's GPU
+            torch.mps.empty_cache()
     except ImportError:
         pass
     try:
